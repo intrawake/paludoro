@@ -10,6 +10,8 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "sxpb @ git+https://github.com/sxproto/sxpb-py.git@trunk",
+    "fastapi>=0.136.1",
+    "uvicorn>=0.46.0",
 ]
 
 [project.urls]
@@ -26,7 +28,12 @@ pythonpath = ["src", "."]
 testpaths = ["test"]
 
 [tool.pdm.scripts]
+chat = { shell = "PYTHONPATH=src python3 src/paludoro/chat.py" }
 test = "pytest -q"
+server = { shell = "uvicorn paludoro.server:app --reload --port 8000 --app-dir src" }
+web-build = { shell = "cd web && npm run build" }
+web-watch = { shell = "cd web && npx vite build --watch --outDir ../dist" }
+web-install = { shell = "cd web && npm install" }
 check-format = "ruff check"
 check-type = "ty check"
 tidy = "ruff format"
