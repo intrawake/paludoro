@@ -8,6 +8,11 @@ const fileList = document.getElementById("file-list") as HTMLDivElement;
 const fileContent = document.getElementById("file-content") as HTMLDivElement;
 
 let isThinking = false;
+let conversationHistory: {
+  role: string;
+  content: string;
+  raw_content?: string;
+}[] = [];
 
 function setThinking(val: boolean) {
   isThinking = val;
@@ -22,9 +27,27 @@ function setThinking(val: boolean) {
   }
 }
 
-async function refreshFiles() {
-  const res = await fetch("/api/files");
-  const files = await res.json();
+function saveHistory() {
+  localStorage.setItem("paludoroHistory", JSON.stringify(conversationHistory));
+}
+
+async function rebuildFiles() {
+  try {
+    const res = await fetch("/api/files", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ history: conversationHistory }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      refreshFilesUI(data.files || {});
+    }
+  } catch (e) {
+    console.error("Failed to rebuild files:", e);
+  }
+}
+
+function refreshFilesUI(files: Record<string, string>) {
   fileList.innerHTML = "";
   for (const [name, content] of Object.entries(files)) {
     const item = document.createElement("div");
@@ -38,10 +61,16 @@ async function refreshFiles() {
   }
   if (Object.keys(files).length === 0) {
     fileContent.style.display = "none";
+  } else {
+    // If the currently viewed file is still in the files, update its content. Otherwise hide.
+    const currentName = fileList.querySelector(".active")?.textContent;
+    if (currentName && files[currentName]) {
+      fileContent.textContent = files[currentName] as string;
+    }
   }
 }
 
-function addMessage(role: string, content: string) {
+function addMessageUI(role: string, content: string) {
   const div = document.createElement("div");
   div.className = `message ${role}`;
   div.innerHTML = `<strong>${role === "user" ? "You" : "Assistant"}:</strong> ${content}`;
@@ -49,15 +78,26 @@ function addMessage(role: string, content: string) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-async function loadHistory() {
-  const res = await fetch("/api/history");
-  const history = await res.json();
+function renderHistory() {
   messagesDiv.innerHTML = "";
-  history.forEach((m: any) => addMessage(m.role, m.content));
+  conversationHistory.forEach((m) => addMessageUI(m.role, m.content));
+  rerollBtn.disabled = conversationHistory.length === 0 || isThinking;
+  deleteBtn.disabled = conversationHistory.length === 0 || isThinking;
+}
 
-  // Enable/disable buttons based on history
-  rerollBtn.disabled = history.length === 0 || isThinking;
-  deleteBtn.disabled = history.length === 0 || isThinking;
+function loadHistory() {
+  const saved = localStorage.getItem("paludoroHistory");
+  if (saved) {
+    try {
+      conversationHistory = JSON.parse(saved);
+    } catch (e) {
+      conversationHistory = [];
+    }
+  } else {
+    conversationHistory = [];
+  }
+  renderHistory();
+  rebuildFiles();
 }
 
 async function sendMessage() {
@@ -65,14 +105,63 @@ async function sendMessage() {
   if (!text || isThinking) return;
 
   userInput.value = "";
-  addMessage("user", text);
+  conversationHistory.push({ role: "user", content: text, raw_content: text });
+  saveHistory();
+  renderHistory();
   setThinking(true);
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ history: conversationHistory }),
+    });
+
+    const data = await res.json();
+    if (data.error) {
+      alert(data.error);
+      // Remove the user message since it failed
+      conversationHistory.pop();
+      saveHistory();
+      renderHistory();
+      return;
+    }
+
+    conversationHistory.push(data.message);
+    saveHistory();
+    renderHistory();
+    refreshFilesUI(data.files || {});
+  } catch (e) {
+    alert("Connection error.");
+    conversationHistory.pop();
+    saveHistory();
+    renderHistory();
+  } finally {
+    setThinking(false);
+    rerollBtn.disabled = false;
+    deleteBtn.disabled = false;
+    userInput.focus();
+  }
+}
+
+async function rerollLast() {
+  if (isThinking) return;
+  if (conversationHistory.length === 0) return;
+
+  if (
+    conversationHistory[conversationHistory.length - 1].role === "assistant"
+  ) {
+    conversationHistory.pop();
+    saveHistory();
+    renderHistory();
+  }
+
+  setThinking(true);
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ history: conversationHistory }),
     });
 
     const data = await res.json();
@@ -80,31 +169,13 @@ async function sendMessage() {
       alert(data.error);
       return;
     }
-    addMessage("assistant", data.response);
-    if (data.new_files && data.new_files.length > 0) {
-      refreshFiles();
-    }
-  } finally {
-    setThinking(false);
-    rerollBtn.disabled = false;
-    deleteBtn.disabled = false;
-    // MUST FOCUS back on input
-    userInput.focus();
-  }
-}
 
-async function rerollLast() {
-  if (isThinking) return;
-  setThinking(true);
-  try {
-    const res = await fetch("/api/reroll", { method: "POST" });
-    const data = await res.json();
-    if (data.error) {
-      alert(data.error);
-    } else {
-      await loadHistory();
-      refreshFiles();
-    }
+    conversationHistory.push(data.message);
+    saveHistory();
+    renderHistory();
+    refreshFilesUI(data.files || {});
+  } catch (e) {
+    alert("Connection error.");
   } finally {
     setThinking(false);
     userInput.focus();
@@ -113,11 +184,24 @@ async function rerollLast() {
 
 async function deleteLastTurn() {
   if (isThinking) return;
+  if (conversationHistory.length === 0) return;
   if (!confirm("Delete the last user message and assistant response?")) return;
 
-  await fetch("/api/delete_turn", { method: "POST" });
-  await loadHistory();
-  refreshFiles();
+  if (
+    conversationHistory[conversationHistory.length - 1].role === "assistant"
+  ) {
+    conversationHistory.pop();
+  }
+  if (
+    conversationHistory.length > 0 &&
+    conversationHistory[conversationHistory.length - 1].role === "user"
+  ) {
+    conversationHistory.pop();
+  }
+
+  saveHistory();
+  renderHistory();
+  await rebuildFiles();
   userInput.focus();
 }
 
@@ -125,12 +209,11 @@ async function clearChat() {
   if (isThinking) return;
   if (!confirm("Are you sure you want to clear the entire session?")) return;
 
-  await fetch("/api/clear", { method: "POST" });
-  messagesDiv.innerHTML = "";
-  fileList.innerHTML = "";
+  conversationHistory = [];
+  saveHistory();
+  renderHistory();
+  refreshFilesUI({});
   fileContent.style.display = "none";
-  rerollBtn.disabled = true;
-  deleteBtn.disabled = true;
   userInput.focus();
 }
 
@@ -147,5 +230,4 @@ userInput.onkeydown = (e) => {
 };
 
 // Initial Load
-refreshFiles();
 loadHistory();

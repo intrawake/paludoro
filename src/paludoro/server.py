@@ -41,14 +41,18 @@ try:
 except Exception:
     pass
 
-# Global State
-session = PaludoroSession()
 MODEL = config.get("chat_model", {}).get("name", "openrouter/openrouter/free")
 API_URL = config.get("chat_model", {}).get("api_url", "http://atomman-0-host:11435/v1")
 
 
+class Message(BaseModel):
+    role: str
+    content: str
+    raw_content: str = ""
+
+
 class ChatRequest(BaseModel):
-    message: str
+    history: list[Message]
 
 
 @app.get("/api/health")
@@ -56,53 +60,21 @@ async def health():
     return {"status": "ok", "project": "paludoro"}
 
 
-@app.get("/api/files")
-async def get_files():
-    return session.files
-
-
-@app.get("/api/history")
-async def get_history():
-    return [{"role": r, "content": c} for r, c, _ in session.history]
-
-
-@app.post("/api/clear")
-async def clear_session():
-    session.reset()
-    return {"status": "cleared"}
-
-
-@app.post("/api/delete_turn")
-async def delete_turn():
-    session.delete_last_turn()
-    return {"status": "deleted"}
-
-
-@app.post("/api/reroll")
-async def reroll():
-    session.pop_assistant_message()
-    if not session.history:
-        return {"error": "No history to reroll"}
-
-    # Use the same prompt building logic
-    prompt = build_prompt(session)
-    response_raw = await asyncio.to_thread(call_api, MODEL, prompt, API_URL)
-    if not response_raw:
-        return {"error": "Failed to get response from AI after multiple retries."}
-
-    clean_resp, new_files = parse_assistant_response(response_raw)
-
-    session.add_message("assistant", clean_resp, raw_content=response_raw)
-    for name, content in new_files.items():
-        session.save_file(name, content)
-
-    return {"response": clean_resp, "new_files": list(new_files.keys())}
+@app.post("/api/files")
+async def get_files(req: ChatRequest):
+    session = PaludoroSession()
+    for m in req.history:
+        session.add_message(m.role, m.content, m.raw_content or m.content)
+    session.rebuild_files()
+    return {"files": session.files}
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    user_msg = req.message
-    session.add_message("user", user_msg)
+    session = PaludoroSession()
+    for m in req.history:
+        session.add_message(m.role, m.content, m.raw_content or m.content)
+    session.rebuild_files()
 
     prompt = build_prompt(session)
 
@@ -113,12 +85,19 @@ async def chat(req: ChatRequest):
 
     clean_resp, new_files = parse_assistant_response(response_raw)
 
-    # Update state
+    # Update state temporarily to return the final files
     session.add_message("assistant", clean_resp, raw_content=response_raw)
     for name, content in new_files.items():
         session.save_file(name, content)
 
-    return {"response": clean_resp, "new_files": list(new_files.keys())}
+    return {
+        "message": {
+            "role": "assistant",
+            "content": clean_resp,
+            "raw_content": response_raw,
+        },
+        "files": session.files,
+    }
 
 
 # Serve static files
