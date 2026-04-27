@@ -1,6 +1,7 @@
 import os
 import json
 import urllib.request
+import time
 from paludoro.state import PaludoroSession, parse_assistant_response
 from paludoro.prompt import build_prompt
 
@@ -22,9 +23,20 @@ def call_api(model, prompt, api_url):
         target_url, data=data, headers={"Content-Type": "application/json"}
     )
 
-    with urllib.request.urlopen(req, timeout=60) as response:
-        res_data = json.loads(response.read().decode("utf-8"))
-        return res_data["choices"][0]["message"].get("content", "").strip()
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                res_data = json.loads(response.read().decode("utf-8"))
+                msg = res_data["choices"][0]["message"]
+                content = msg.get("content")
+                if content is None:
+                    return ""
+                return content.strip()
+        except Exception as e:
+            if attempt == 2:
+                print(f"Failed API call after 3 attempts: {e}")
+                return ""
+            time.sleep(2)
 
 
 def main():

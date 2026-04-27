@@ -22,12 +22,13 @@ def test_save_and_inject():
     assert new_files == {"mood.sxpb": "(mood sleepy)"}
 
     # Update session
-    session.add_message("assistant", clean_resp)
+    session.add_message("assistant", clean_resp, raw_content=response)
     for name, content in new_files.items():
         session.save_file(name, content)
 
     # Simulate second turn
     session.add_message("user", "What is my mood?")
+
     prompt2 = build_prompt(session)
 
     # Now it should have the file context!

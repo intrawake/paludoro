@@ -30,13 +30,14 @@ testpaths = ["test"]
 [tool.pdm.scripts]
 chat = { shell = "PYTHONPATH=src python3 src/paludoro/chat.py" }
 test = "pytest -q"
-server = { shell = "uvicorn paludoro.server:app --reload --port 8000 --app-dir src" }
+server = { shell = "PYTHONPATH=src exec uvicorn paludoro.server:app --reload --reload-dir src --port ${PALUDORO_PORT:-8000}" }
 web-build = { shell = "cd web && npm run build" }
-web-watch = { shell = "cd web && npx vite build --watch --outDir ../dist" }
+
+web-watch = { shell = "cd web && npx vite build --watch --outDir ../dist --emptyOutDir" }
 web-install = { shell = "cd web && npm install" }
 check-format = "ruff check"
 check-type = "ty check"
-tidy = "ruff format"
+tidy = { shell = "ruff format src test && ruff check src test --fix && cd web && npx prettier --write '**/*.{ts,html}'" }
 lint = {composite = ["check-format", "check-type"]}
 tidytest = {composite = ["test", "tidy", "lint"]}
 
@@ -48,4 +49,5 @@ dev = [
     "pytest>=9.0.2",
     "ruff",
     "ty",
+    "psutil>=7.2.2",
 ]

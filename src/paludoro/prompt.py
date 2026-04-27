@@ -17,7 +17,7 @@ def build_prompt(
 
     # 2. History
     lines.append("### Conversation History")
-    for role, content in session.history:
+    for role, content, _ in session.history:
         lines.append(f"**{role.capitalize()}**: {content}")
     lines.append("")
 

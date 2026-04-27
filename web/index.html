@@ -1,12 +1,176 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Paludoro</title>
-</head>
-<body>
-  <div id="app"></div>
-  <script type="module" src="/src/main.ts"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Paludoro</title>
+    <style>
+      :root {
+        --bg: #1e1e1e;
+        --text: #e0e0e0;
+        --accent: #4da3ff;
+        --border: #444;
+        --sidebar-bg: #252525;
+        --danger: #ff4d4d;
+      }
+      body {
+        font-family: sans-serif;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        display: flex;
+        height: 100vh;
+      }
+      #sidebar {
+        width: 300px;
+        background: var(--sidebar-bg);
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        padding: 1rem;
+      }
+      #chat-main {
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+        padding: 1rem;
+        min-width: 0;
+      }
+      .header-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+      .header-row h1 {
+        margin: 0;
+      }
+
+      #messages {
+        flex-grow: 1;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        padding: 1rem;
+        margin-bottom: 1rem;
+        background: #2d2d2d;
+      }
+      .message {
+        margin-bottom: 1rem;
+        white-space: pre-wrap;
+      }
+      .user {
+        color: var(--accent);
+        font-weight: bold;
+      }
+      .assistant {
+        color: #fff;
+      }
+
+      #input-area {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      #user-input {
+        width: 100%;
+        background: #333;
+        color: #fff;
+        border: 1px solid var(--border);
+        padding: 0.5rem;
+        box-sizing: border-box;
+        font-family: inherit;
+        resize: vertical;
+        min-height: 60px;
+      }
+      .actions-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .left-actions,
+      .right-actions {
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      button {
+        background: #333;
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      button:hover {
+        background: #444;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button.primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      button.danger {
+        color: var(--danger);
+        border-color: var(--danger);
+      }
+
+      .file-item {
+        padding: 0.5rem;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+      }
+      .file-item:hover {
+        background: #333;
+      }
+      #file-content {
+        margin-top: 1rem;
+        padding: 0.5rem;
+        background: #000;
+        font-family: monospace;
+        white-space: pre-wrap;
+        font-size: 0.9rem;
+        display: none;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="sidebar">
+      <h2>📁 Files</h2>
+      <div id="file-list"></div>
+      <div id="file-content"></div>
+    </div>
+    <div id="chat-main">
+      <div class="header-row">
+        <h1>🌿 Paludoro</h1>
+        <button id="clear-btn" class="danger">Clear Chat</button>
+      </div>
+      <div id="messages"></div>
+      <div id="input-area">
+        <textarea
+          id="user-input"
+          placeholder="Say something... (Shift+Enter for new line)"
+          autocomplete="off"
+        ></textarea>
+        <div class="actions-row">
+          <div class="left-actions">
+            <button id="reroll-btn" title="Reroll last assistant message">
+              Reroll
+            </button>
+            <button id="delete-btn" title="Delete last turn">
+              Delete Turn
+            </button>
+          </div>
+          <div class="right-actions">
+            <button id="send-btn" class="primary">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>
