@@ -1,0 +1,7 @@
+(chat_model
+ (api_url http://atomman-0-host:11435/v1)
+ (name openrouter/openrouter/free)
+)
+(server
+ (port 8000)
+)

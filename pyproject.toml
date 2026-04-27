@@ -30,7 +30,7 @@ testpaths = ["test"]
 [tool.pdm.scripts]
 chat = { shell = "PYTHONPATH=src python3 src/paludoro/chat.py" }
 test = "pytest -q"
-server = { shell = "PYTHONPATH=src exec uvicorn paludoro.server:app --reload --reload-dir src --port ${PALUDORO_PORT:-8000}" }
+server = { shell = "PYTHONPATH=src python3 src/paludoro/server.py" }
 web-build = { shell = "cd web && npm run build" }
 
 web-watch = { shell = "cd web && npx vite build --watch --outDir ../dist --emptyOutDir" }

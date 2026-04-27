@@ -40,8 +40,27 @@ def call_api(model, prompt, api_url):
 
 
 def main():
-    api_url = os.getenv("PALUDORO_API_URL", "http://atomman-0-host:11435/v1")
-    model = os.getenv("PALUDORO_MODEL", "openrouter/openrouter/free")
+    import sxpb
+    from pathlib import Path
+
+    config: dict = {}
+    try:
+        loaded = sxpb.load(
+            str(Path(__file__).parent.parent.parent / "preset" / "config.sxpb")
+        )
+        if isinstance(loaded, dict):
+            config = loaded
+    except Exception:
+        pass
+
+    api_url = os.getenv(
+        "PALUDORO_API_URL",
+        config.get("chat_model", {}).get("api_url", "http://atomman-0-host:11435/v1"),
+    )
+    model = os.getenv(
+        "PALUDORO_MODEL",
+        config.get("chat_model", {}).get("name", "openrouter/openrouter/free"),
+    )
 
     session = PaludoroSession()
     print(f"Paludoro Chat Started (Model: {model})")

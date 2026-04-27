@@ -1,6 +1,5 @@
 import asyncio
 import os
-import signal
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import sxpb
 
 from paludoro.chat import call_api
 from paludoro.prompt import build_prompt
@@ -17,9 +17,13 @@ from paludoro.state import PaludoroSession, parse_assistant_response
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    yield
-    # Shutdown
-    print("\n🕵️‍♀️ Paludoro (FastAPI) shutting down...")
+    try:
+        yield
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # Shutdown
+        print("\nPaludoro (FastAPI) shutting down...")
 
 
 app = FastAPI(title="Paludoro", lifespan=lifespan)
@@ -28,10 +32,19 @@ app = FastAPI(title="Paludoro", lifespan=lifespan)
 BASE_DIR = Path(__file__).parent.parent.parent
 DIST_DIR = BASE_DIR / "dist"
 
+# Config
+config: dict = {}
+try:
+    loaded = sxpb.load(str(BASE_DIR / "preset" / "config.sxpb"))
+    if isinstance(loaded, dict):
+        config = loaded
+except Exception:
+    pass
+
 # Global State
 session = PaludoroSession()
-MODEL = "openrouter/openrouter/free"
-API_URL = "http://atomman-0-host:11435/v1"
+MODEL = config.get("chat_model", {}).get("name", "openrouter/openrouter/free")
+API_URL = config.get("chat_model", {}).get("api_url", "http://atomman-0-host:11435/v1")
 
 
 class ChatRequest(BaseModel):
@@ -123,30 +136,30 @@ async def spa_fallback(request, exc):
 
 def main():
     import uvicorn
+    import signal
+    import sys
 
-    port = int(os.getenv("PALUDORO_PORT", "8000"))
+    port = int(os.getenv("PALUDORO_PORT", config.get("server", {}).get("port", 8000)))
 
-    # GRACEFUL BUT COMPLETE SHUTDOWN
-    def handle_sigint(sig, frame):
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        print(f"\n🕵️‍♀️ Paludoro (PID {os.getpid()}) exiting...")
-        # Send SIGTERM to the process group (including PDM)
-        try:
-            os.killpg(0, signal.SIGTERM)
-        except Exception:
-            pass
-        # Exit immediately to release the terminal
-        os._exit(0)
-
-    signal.signal(signal.SIGINT, handle_sigint)
-
-    uvicorn.run(
-        "paludoro.server:app",
-        host="0.0.0.0",
-        port=port,
-        reload=True,
-        reload_dirs=[str(BASE_DIR / "src")],
+    cfg = uvicorn.Config(
+        "paludoro.server:app", host="0.0.0.0", port=port, reload=False, log_level="info"
     )
+    server = uvicorn.Server(cfg)
+
+    def handle_exit(sig, frame):
+        server.should_exit = True
+        if not server.started:
+            sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_exit)
+    signal.signal(signal.SIGTERM, handle_exit)
+
+    try:
+        server.run()
+    except Exception:
+        pass
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":

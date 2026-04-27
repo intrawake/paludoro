@@ -44,7 +44,11 @@ def test_server_interrupt_full_cleanup():
 
     pdm_path = shutil.which("pdm")
     if not pdm_path:
-        assert False, "pdm not found in PATH"
+        local_pdm = os.path.expanduser("~/.local/bin/pdm")
+        if os.path.exists(local_pdm):
+            pdm_path = local_pdm
+        else:
+            assert False, "pdm not found in PATH or ~/.local/bin/pdm"
 
     proc = subprocess.Popen(
         [pdm_path, "run", "server"],
@@ -69,8 +73,8 @@ def test_server_interrupt_full_cleanup():
         proc.kill()
         assert False, f"Server failed to start on port {port}"
 
-    print(f"Sending SIGINT to proc.pid {proc.pid}...")
-    proc.send_signal(signal.SIGINT)
+    print(f"Sending SIGINT to process group {pgid}...")
+    os.killpg(pgid, signal.SIGINT)
 
     try:
         out, err = proc.communicate(timeout=5)
