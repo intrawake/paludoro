@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
+    />
+
     <title>Paludoro</title>
     <style>
       :root {
@@ -12,6 +16,7 @@
         --border: #444;
         --sidebar-bg: #252525;
         --danger: #ff4d4d;
+        --sidebar-width: 300px;
       }
       body {
         font-family: sans-serif;
@@ -20,14 +25,23 @@
         color: var(--text);
         display: flex;
         height: 100vh;
+        height: -webkit-fill-available;
+        height: 100dvh;
+        overflow: hidden; /* Prevent body scroll */
+      }
+      html {
+        height: -webkit-fill-available;
       }
       #sidebar {
-        width: 300px;
+        width: var(--sidebar-width);
         background: var(--sidebar-bg);
         border-right: 1px solid var(--border);
         display: flex;
         flex-direction: column;
         padding: 1rem;
+        transition: transform 0.3s ease;
+        flex-shrink: 0;
+        box-sizing: border-box;
       }
       #chat-main {
         flex-grow: 1;
@@ -35,12 +49,15 @@
         flex-direction: column;
         padding: 1rem;
         min-width: 0;
+        box-sizing: border-box;
+        height: 100%; /* Fill body */
       }
       .header-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
         margin-bottom: 1rem;
+        flex-shrink: 0;
       }
       .header-row h1 {
         margin: 0;
@@ -70,6 +87,7 @@
         display: flex;
         flex-direction: column;
         gap: 0.5rem;
+        flex-shrink: 0;
       }
       #user-input {
         width: 100%;
@@ -79,7 +97,7 @@
         padding: 0.5rem;
         box-sizing: border-box;
         font-family: inherit;
-        resize: vertical;
+        resize: none;
         min-height: 60px;
       }
       .actions-row {
@@ -100,6 +118,9 @@
         padding: 0.5rem 1rem;
         cursor: pointer;
         border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       button:hover {
         background: #444;
@@ -118,15 +139,21 @@
         border-color: var(--danger);
       }
 
-      .file-item {
+      #toggle-sidebar {
+        display: block;
+        font-size: 1.2rem;
+        padding: 0.5rem;
+      }
+
+      .artifact-item {
         padding: 0.5rem;
         border-bottom: 1px solid var(--border);
         cursor: pointer;
       }
-      .file-item:hover {
+      .artifact-item:hover {
         background: #333;
       }
-      #file-content {
+      #artifact-content {
         margin-top: 1rem;
         padding: 0.5rem;
         background: #000;
@@ -136,38 +163,299 @@
         display: none;
         overflow-x: auto;
       }
+
+      @media (max-width: 768px) {
+        #sidebar {
+          position: fixed;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          z-index: 1000;
+          transform: translateX(-100%);
+          box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
+        }
+        #sidebar.open {
+          transform: translateX(0);
+        }
+        #toggle-sidebar {
+          display: block;
+        }
+        #sidebar-overlay {
+          display: none;
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+          z-index: 999;
+        }
+        #sidebar-overlay.open {
+          display: block;
+        }
+      }
     </style>
   </head>
   <body>
+    <div id="sidebar-overlay"></div>
     <div id="sidebar">
-      <h2>📁 Files</h2>
-      <div id="file-list"></div>
-      <div id="file-content"></div>
+      <div
+        id="artifacts-section"
+        style="
+          flex: 1 1 50%;
+          min-height: 100px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        "
+      >
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            flex-shrink: 0;
+          "
+        >
+          <h2 style="margin: 0">📁 Artifacts</h2>
+          <button id="close-sidebar" style="display: none">✕</button>
+        </div>
+        <div id="artifact-list" style="flex-grow: 1; overflow-y: auto"></div>
+      </div>
+
+      <div
+        id="sidebar-resizer"
+        style="
+          height: 8px;
+          cursor: ns-resize;
+          background: var(--border);
+          margin: 4px -1rem;
+          flex-shrink: 0;
+          z-index: 10;
+        "
+      ></div>
+
+      <div
+        id="agents-section"
+        style="
+          flex: 1 1 50%;
+          min-height: 100px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        "
+      >
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 0.5rem 0;
+            flex-shrink: 0;
+          "
+        >
+          <h2 style="margin: 0">🤖 Agents</h2>
+        </div>
+        <div id="agent-list" style="flex-grow: 1; overflow-y: auto"></div>
+      </div>
     </div>
     <div id="chat-main">
       <div class="header-row">
-        <h1>🌿 Paludoro</h1>
-        <button id="clear-btn" class="danger">Clear Chat</button>
+        <div style="display: flex; align-items: center">
+          <h1 id="app-title">🌿 Paludoro</h1>
+        </div>
+        <div style="display: flex; gap: 0.5rem">
+          <button id="back-to-chat-btn" style="display: none" class="primary">
+            Back to Chat
+          </button>
+          <button id="clear-btn" class="danger">Clear Chat</button>
+        </div>
       </div>
-      <div id="messages"></div>
-      <div id="input-area">
-        <textarea
-          id="user-input"
-          placeholder="Say something... (Shift+Enter for new line)"
-          autocomplete="off"
-        ></textarea>
-        <div class="actions-row">
-          <div class="left-actions">
-            <button id="reroll-btn" title="Reroll last assistant message">
-              Reroll
+      <div
+        id="chat-container"
+        style="
+          display: flex;
+          flex-direction: column;
+          flex-grow: 1;
+          overflow: hidden;
+        "
+      >
+        <div id="messages"></div>
+        <div id="input-area">
+          <textarea
+            id="user-input"
+            placeholder="Say something... (Shift+Enter for new line)"
+            autocomplete="off"
+          ></textarea>
+          <div class="actions-row">
+            <div class="left-actions">
+              <button id="toggle-sidebar" title="Toggle Artifacts">📁</button>
+              <button id="more-btn" title="More Options">⋯</button>
+              <div id="extra-options" style="display: none; gap: 0.5rem">
+                <button id="reroll-btn" title="Reroll last assistant message">
+                  Reroll
+                </button>
+                <button id="delete-btn" title="Delete last turn">
+                  Delete Turn
+                </button>
+                <button id="refresh-btn" title="Refresh Page">🔄</button>
+                <button id="llm-log-btn" title="View LLM Request Log">
+                  🔍 LLM Log
+                </button>
+              </div>
+            </div>
+            <div class="right-actions">
+              <button id="send-btn" class="primary">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div
+        id="main-artifact-view"
+        style="
+          display: none;
+          flex-direction: column;
+          flex-grow: 1;
+          overflow: hidden;
+          background: #000;
+        "
+      >
+        <div
+          id="artifact-content-area"
+          style="
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            font-family: monospace;
+            white-space: pre-wrap;
+          "
+        ></div>
+        <div
+          id="artifact-footer"
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem;
+            background: #222;
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+          "
+        >
+          <div style="display: flex; gap: 0.5rem; align-items: center">
+            <button id="artifact-menu-btn" title="Toggle Artifacts">📁</button>
+            <span
+              id="artifact-timestamp"
+              style="font-size: 0.9em; color: #aaa"
+            ></span>
+          </div>
+          <div
+            id="artifact-edit-actions"
+            style="display: flex; gap: 0.5rem; align-items: center"
+          >
+            <button
+              id="edit-artifact-btn"
+              title="Edit artifact"
+              style="display: none"
+            >
+              ✏️ Edit
             </button>
-            <button id="delete-btn" title="Delete last turn">
-              Delete Turn
+            <button
+              id="save-artifact-btn"
+              title="Save as new version"
+              class="primary"
+              style="display: none"
+            >
+              💾 Save
+            </button>
+            <button
+              id="cancel-edit-btn"
+              title="Discard changes"
+              style="display: none"
+            >
+              Cancel
+            </button>
+            <button
+              id="delete-version-btn"
+              title="Delete this version"
+              class="danger"
+              style="display: none"
+            >
+              🗑️ Delete
             </button>
           </div>
-          <div class="right-actions">
-            <button id="send-btn" class="primary">Send</button>
+          <div style="display: flex; gap: 0.5rem; align-items: center">
+            <button id="artifact-prev-btn">◀</button>
+            <span
+              id="artifact-version-display"
+              style="
+                color: #ccc;
+                font-size: 0.9em;
+                min-width: 60px;
+                text-align: center;
+              "
+            ></span>
+            <button id="artifact-next-btn">▶</button>
           </div>
+        </div>
+      </div>
+    </div>
+    <!-- LLM Request Log Modal -->
+    <div
+      id="llm-log-overlay"
+      style="
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 2000;
+        justify-content: center;
+        align-items: center;
+      "
+    >
+      <div
+        id="llm-log-modal"
+        style="
+          background: var(--sidebar-bg);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          width: 90vw;
+          max-width: 900px;
+          height: 85vh;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        "
+      >
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+          "
+        >
+          <h2 style="margin: 0; font-size: 1.1rem">🔍 LLM Request Log</h2>
+          <button id="llm-log-close-btn" style="padding: 0.3rem 0.7rem">
+            ✕
+          </button>
+        </div>
+        <div
+          id="llm-log-content"
+          style="
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.85rem;
+          "
+        >
+          <p style="color: #888">Loading...</p>
         </div>
       </div>
     </div>

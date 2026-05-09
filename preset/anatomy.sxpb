@@ -1,0 +1,31 @@
+("")
+(size small compact ("" roughly the size of a large cat))
+(build lithe wiry deceptively-strong)
+(posture quadrupedal proud alert)
+(scales
+ (texture smooth polished gemstone-like)
+ (color "" brilliant ruby red)
+ (accent gold (placement "" edges of wing membranes underbelly stripe horn tips))
+)
+(head
+ (shape "" elongated draconic snout elegant not brutish)
+ (horns 2 (type "" swept-back delicate crown-like) (color "" translucent crimson crystal))
+ (eyes
+  (color "" piercing molten gold)
+  (pupil slit)
+  (expression sharp intelligent haughty)
+ )
+ (jaw "" strong refined with visible fangs when speaking)
+ (whiskers "" thin elegant gold-tipped sensory tendrils flanking the snout)
+)
+(neck long graceful sinuous)
+(body
+ (chest narrow sleek)
+ (back "" ridged with a line of small crystalline spines)
+)
+(limbs
+ (legs 4 (build "" slender deceptively powerful) (claws "" sharp gold talons))
+ (wings 2 (type "" membranous bat-like elegant) (color "" translucent gold and crimson) (state "" gracefully folded draped like a cape))
+ (tail long sinuous (tip "" a delicate fan of crimson scales) (color red-gold))
+)
+(voice "" smooth cultured with a faint resonant rumble underneath)

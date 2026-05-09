@@ -6,7 +6,7 @@ def test_failing_llm_message():
     msg = (
         "Yo, Alex! My name is **ChatBot**.  \n"
         "\n"
-        "Here are the name files as requested:  \n"
+        "Here are the name artifacts as requested:  \n"
         "```sxpb >assistant_name.sxpb  \n"
         "(name ChatBot)  \n"
         "```  \n"
@@ -18,17 +18,17 @@ def test_failing_llm_message():
         "Let me know how else I can help! 👍"
     )
 
-    clean_msg, files = parse_assistant_response(msg)
+    clean_msg, artifacts = parse_assistant_response(msg)
 
-    print(f"DEBUG: Files parsed: {list(files.keys())}")
+    print(f"DEBUG: Artifacts parsed: {list(artifacts.keys())}")
 
     # These should be found
-    assert "assistant_name.sxpb" in files, "Failed to parse assistant_name.sxpb"
-    assert "user_name.sxpb" in files, "Failed to parse user_name.sxpb"
+    assert "assistant_name.sxpb" in artifacts, "Failed to parse assistant_name.sxpb"
+    assert "user_name.sxpb" in artifacts, "Failed to parse user_name.sxpb"
 
     # Check contents
-    assert "(name ChatBot)" in files["assistant_name.sxpb"]
-    assert "(name Alex)" in files["user_name.sxpb"]
+    assert "(name ChatBot)" in artifacts["assistant_name.sxpb"]
+    assert "(name Alex)" in artifacts["user_name.sxpb"]
 
     # Verify newlines (Surgical Parsing)
     # The message has a code block between text.
@@ -41,18 +41,35 @@ def test_failing_llm_message():
 
 def test_newline_normalization():
     msg = "Text before.\n\n\n```sxpb >file.sxpb\n(content)\n```\nText after."
-    clean, files = parse_assistant_response(msg)
+    clean, artifacts = parse_assistant_response(msg)
     # 3 newlines before, 1 after. Max is 3.
     assert clean == "Text before.\n\n\nText after."
 
     msg2 = "Top.\n```sxpb >f.sxpb\n(c)\n```\n\nBottom."
-    clean2, files2 = parse_assistant_response(msg2)
+    clean2, artifacts2 = parse_assistant_response(msg2)
     # 1 before, 2 after. Max is 2.
     assert clean2 == "Top.\n\nBottom."
     print("✅ test_newline_normalization passed!")
 
 
+def test_text_artifact_parsing():
+    msg = (
+        "Here is your design:\n\n"
+        "```text > image.txt\n"
+        "A cute sprite detective with auburn hair.\n"
+        "```\n"
+        "\n"
+        "Hope you like it!"
+    )
+    clean, artifacts = parse_assistant_response(msg)
+    assert "image.txt" in artifacts
+    assert artifacts["image.txt"] == "A cute sprite detective with auburn hair."
+    assert "A cute sprite detective" not in clean
+    print("✅ test_text_artifact_parsing passed!")
+
+
 if __name__ == "__main__":
     test_failing_llm_message()
     test_newline_normalization()
+    test_text_artifact_parsing()
     print("✅ All parsing tests passed!")

@@ -4,18 +4,49 @@ const sendBtn = document.getElementById("send-btn") as HTMLButtonElement;
 const clearBtn = document.getElementById("clear-btn") as HTMLButtonElement;
 const rerollBtn = document.getElementById("reroll-btn") as HTMLButtonElement;
 const deleteBtn = document.getElementById("delete-btn") as HTMLButtonElement;
-const fileList = document.getElementById("file-list") as HTMLDivElement;
-const fileContent = document.getElementById("file-content") as HTMLDivElement;
+const moreBtn = document.getElementById("more-btn") as HTMLButtonElement;
+const extraOptions = document.getElementById("extra-options") as HTMLDivElement;
+const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
+const artifactList = document.getElementById("artifact-list") as HTMLDivElement;
+const agentList = document.getElementById("agent-list") as HTMLDivElement;
+const artifactContent = document.getElementById(
+  "artifact-content",
+) as HTMLDivElement;
 
 let isThinking = false;
+let clientTriggerGen: number | null = null;
+let isEditingArtifact = false;
 let conversationHistory: {
   role: string;
   content: string;
   raw_content?: string;
 }[] = [];
+let currentArtifactVersions: Record<string, [string, number][]> = {};
+let currentViewedArtifact: string | null = null;
+let currentArtifactVersionIndex: number = 0;
+let userRoleName = "User";
+let runningAgents: string[] = [];
+let availableAgents: string[] = [];
 
-function setThinking(val: boolean) {
+async function fetchUserRole() {
+  try {
+    const res = await fetch("/api/health");
+    if (res.ok) {
+      const data = await res.json();
+      if (data.user_role) {
+        userRoleName = data.user_role;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to fetch user role:", e);
+  }
+}
+
+fetchUserRole();
+
+function setThinking(val: boolean, triggerGen?: number) {
   isThinking = val;
+  if (val) clientTriggerGen = triggerGen ?? null;
   sendBtn.disabled = val;
   rerollBtn.disabled = val;
   deleteBtn.disabled = val;
@@ -28,52 +59,565 @@ function setThinking(val: boolean) {
 }
 
 function saveHistory() {
-  localStorage.setItem("paludoroHistory", JSON.stringify(conversationHistory));
+  fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ history: conversationHistory }),
+  }).catch((e) => console.error("Failed to save history:", e));
 }
 
-async function rebuildFiles() {
+const backBtn = document.getElementById(
+  "back-to-chat-btn",
+) as HTMLButtonElement;
+
+async function rebuildArtifacts() {
   try {
-    const res = await fetch("/api/files", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: conversationHistory }),
-    });
+    const res = await fetch("/api/artifacts");
     if (res.ok) {
       const data = await res.json();
-      refreshFilesUI(data.files || {});
+      refreshArtifactsUI(data.artifacts || {}, data.version_counts || {});
     }
   } catch (e) {
-    console.error("Failed to rebuild files:", e);
+    console.error("Failed to rebuild artifacts:", e);
   }
 }
 
-function refreshFilesUI(files: Record<string, string>) {
-  fileList.innerHTML = "";
-  for (const [name, content] of Object.entries(files)) {
-    const item = document.createElement("div");
-    item.className = "file-item";
-    item.textContent = name;
-    item.onclick = () => {
-      fileContent.textContent = content as string;
-      fileContent.style.display = "block";
-    };
-    fileList.appendChild(item);
-  }
-  if (Object.keys(files).length === 0) {
-    fileContent.style.display = "none";
-  } else {
-    // If the currently viewed file is still in the files, update its content. Otherwise hide.
-    const currentName = fileList.querySelector(".active")?.textContent;
-    if (currentName && files[currentName]) {
-      fileContent.textContent = files[currentName] as string;
+async function fetchArtifactVersions(
+  artipath: string,
+): Promise<[string, number][]> {
+  try {
+    const res = await fetch(
+      `/api/artifacts/${encodeURIComponent(artipath)}/versions`,
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const versions: [string, number][] = data.versions || [];
+      currentArtifactVersions[artipath] = versions;
+      return versions;
     }
+  } catch (e) {
+    console.error(`Failed to fetch versions for ${artipath}:`, e);
+  }
+  return [];
+}
+
+async function rebuildAgents() {
+  try {
+    const res = await fetch("/api/agents");
+    if (res.ok) {
+      const data = await res.json();
+      refreshAgentsUI(data.agents || []);
+    }
+  } catch (e) {
+    console.error("Failed to rebuild agents:", e);
+  }
+}
+
+async function runAgent(agentName: string) {
+  if (isThinking) return;
+  setThinking(true);
+  try {
+    const res = await fetch(`/api/agents/${agentName}/run`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      alert(data.error || "Failed to run agent");
+    }
+  } catch (e) {
+    console.error("Failed to run agent:", e);
+  } finally {
+    // Pipeline is background, so we rely on polling to unset thinking if history changed.
+    // But since this might NOT change history, let's just unset it after a brief delay
+    // or let the user click again.
+    setTimeout(() => setThinking(false), 1000);
+  }
+}
+
+async function loadHistory() {
+  try {
+    const res = await fetch("/api/history");
+    if (res.ok) {
+      const data = await res.json();
+      conversationHistory = data.history || [];
+    } else {
+      conversationHistory = [];
+    }
+  } catch (e) {
+    console.error("Failed to load history:", e);
+    conversationHistory = [];
+  }
+
+  if (conversationHistory.length === 0) {
+    const saved = localStorage.getItem("paludoroHistory");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          conversationHistory = parsed;
+          saveHistory();
+          console.log("Migrated history from localStorage to backend.");
+        }
+      } catch (e) {}
+    }
+  }
+
+  renderHistory();
+  rebuildArtifacts();
+  rebuildAgents();
+}
+const chatContainer = document.getElementById(
+  "chat-container",
+) as HTMLDivElement;
+const mainArtifactView = document.getElementById(
+  "main-artifact-view",
+) as HTMLDivElement;
+const artifactContentArea = document.getElementById(
+  "artifact-content-area",
+) as HTMLDivElement;
+const artifactMenuBtn = document.getElementById(
+  "artifact-menu-btn",
+) as HTMLButtonElement;
+const artifactTimestamp = document.getElementById(
+  "artifact-timestamp",
+) as HTMLSpanElement;
+const artifactPrevBtn = document.getElementById(
+  "artifact-prev-btn",
+) as HTMLButtonElement;
+const artifactNextBtn = document.getElementById(
+  "artifact-next-btn",
+) as HTMLButtonElement;
+const artifactVersionDisplay = document.getElementById(
+  "artifact-version-display",
+) as HTMLSpanElement;
+
+artifactMenuBtn.onclick = () => {
+  toggleSidebar();
+};
+
+backBtn.onclick = () => {
+  isEditingArtifact = false;
+  chatContainer.style.display = "flex";
+  mainArtifactView.style.display = "none";
+  backBtn.style.display = "none";
+};
+
+const toggleSidebarBtn = document.getElementById(
+  "toggle-sidebar",
+) as HTMLButtonElement;
+const sidebar = document.getElementById("sidebar") as HTMLDivElement;
+const sidebarOverlay = document.getElementById(
+  "sidebar-overlay",
+) as HTMLDivElement;
+const closeSidebarBtn = document.getElementById(
+  "close-sidebar",
+) as HTMLButtonElement;
+
+function toggleSidebar() {
+  sidebar.classList.toggle("open");
+  sidebarOverlay.classList.toggle("open");
+}
+
+toggleSidebarBtn.onclick = toggleSidebar;
+sidebarOverlay.onclick = toggleSidebar;
+closeSidebarBtn.onclick = toggleSidebar;
+
+const resizer = document.getElementById("sidebar-resizer") as HTMLDivElement;
+const artifactsSection = document.getElementById(
+  "artifacts-section",
+) as HTMLDivElement;
+const agentsSection = document.getElementById(
+  "agents-section",
+) as HTMLDivElement;
+
+if (resizer && artifactsSection && agentsSection) {
+  let isResizing = false;
+
+  resizer.onmousedown = (e) => {
+    isResizing = true;
+    document.body.style.cursor = "ns-resize";
+    e.preventDefault();
+  };
+
+  window.addEventListener("mousemove", (e) => {
+    if (!isResizing) return;
+
+    const sidebarRect = sidebar.getBoundingClientRect();
+    const relativeY = e.clientY - sidebarRect.top;
+    const totalHeight = sidebarRect.height;
+
+    // Convert to percentage
+    const percentage = (relativeY / totalHeight) * 100;
+
+    // Constraints (10% to 90%)
+    if (percentage > 10 && percentage < 90) {
+      artifactsSection.style.flex = `0 0 ${percentage}%`;
+      agentsSection.style.flex = `1 1 auto`;
+    }
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (isResizing) {
+      isResizing = false;
+      document.body.style.cursor = "";
+    }
+  });
+}
+
+// Show close button only when sidebar is "open" as a mobile overlay
+function updateSidebarUI() {
+  if (window.innerWidth <= 768) {
+    closeSidebarBtn.style.display = "block";
+  } else {
+    closeSidebarBtn.style.display = "none";
+    sidebar.classList.remove("open");
+    sidebarOverlay.classList.remove("open");
+  }
+}
+window.addEventListener("resize", updateSidebarUI);
+updateSidebarUI();
+
+const inputArea = document.getElementById("input-area") as HTMLDivElement;
+
+// Handle mobile keyboard "squash" (safely)
+if (window.visualViewport) {
+  const resizeHandler = () => {
+    const vv = window.visualViewport!;
+    // Calculate how much of the layout viewport is hidden by keyboard/bars
+    // We scale the height to get the "logical" visible height
+    const visualHeight = vv.height * vv.scale;
+    const layoutHeight = window.innerHeight;
+    const offset = Math.max(0, layoutHeight - visualHeight);
+
+    // Instead of shrinking the body (which breaks zoom focal points),
+    // we push the input area up using padding.
+    // This allows the flex container to squash the message area.
+    inputArea.style.paddingBottom = `${offset}px`;
+
+    // Reset body height to let CSS (100dvh) handle the main container
+    document.body.style.height = "";
+
+    // Keep chat scrolled to bottom
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  };
+
+  window.visualViewport.addEventListener("resize", resizeHandler);
+  window.visualViewport.addEventListener("scroll", resizeHandler);
+  // Initial call
+  resizeHandler();
+}
+
+const editArtifactBtn = document.getElementById(
+  "edit-artifact-btn",
+) as HTMLButtonElement;
+const saveArtifactBtn = document.getElementById(
+  "save-artifact-btn",
+) as HTMLButtonElement;
+const cancelEditBtn = document.getElementById(
+  "cancel-edit-btn",
+) as HTMLButtonElement;
+const deleteVersionBtn = document.getElementById(
+  "delete-version-btn",
+) as HTMLButtonElement;
+
+function isImageContent(content: string): boolean {
+  return content.startsWith("data:image") || content.startsWith("/images/");
+}
+
+function exitEditMode() {
+  isEditingArtifact = false;
+  renderCurrentArtifactVersion();
+}
+
+function enterEditMode() {
+  if (!currentViewedArtifact || !currentArtifactVersions[currentViewedArtifact])
+    return;
+  const versions = currentArtifactVersions[currentViewedArtifact];
+  const [content, turn] = versions[currentArtifactVersionIndex];
+  if (isImageContent(content as string)) return;
+
+  isEditingArtifact = true;
+  renderCurrentArtifactVersion();
+}
+
+function renderCurrentArtifactVersion() {
+  if (!currentViewedArtifact || !currentArtifactVersions[currentViewedArtifact])
+    return;
+  const versions = currentArtifactVersions[currentViewedArtifact];
+  const [content, turn] = versions[currentArtifactVersionIndex];
+  const isImage = isImageContent(content as string);
+
+  // Force exit edit mode for images or if content is not a string
+  if (isEditingArtifact && isImage) {
+    isEditingArtifact = false;
+  }
+
+  // Render content
+  if (isEditingArtifact) {
+    artifactContentArea.style.padding = "0";
+    let textarea = document.getElementById(
+      "artifact-editor",
+    ) as HTMLTextAreaElement | null;
+    if (!textarea) {
+      artifactContentArea.innerHTML = "";
+      textarea = document.createElement("textarea");
+      textarea.id = "artifact-editor";
+      textarea.spellcheck = false;
+      textarea.style.cssText =
+        "width:100%;height:100%;background:#1a1a1a;color:#e0e0e0;" +
+        "border:none;border-left:3px solid var(--accent);font-family:monospace;" +
+        "font-size:0.9rem;padding:1rem;resize:none;box-sizing:border-box;" +
+        "outline:none;line-height:1.5;";
+      artifactContentArea.appendChild(textarea);
+    }
+    textarea.value = content as string;
+    textarea.focus();
+  } else {
+    artifactContentArea.style.padding = "1rem";
+    if (isImage) {
+      artifactContentArea.innerHTML = `<img src="${content}" style="max-width: 100%; height: auto; display: block; margin: 0 auto;" />`;
+    } else {
+      artifactContentArea.textContent = content as string;
+    }
+  }
+
+  // Button visibility
+  editArtifactBtn.style.display =
+    !isEditingArtifact && !isImage ? "inline-block" : "none";
+  saveArtifactBtn.style.display = isEditingArtifact ? "inline-block" : "none";
+  cancelEditBtn.style.display = isEditingArtifact ? "inline-block" : "none";
+  deleteVersionBtn.style.display =
+    !isEditingArtifact && !isImage && versions.length > 1
+      ? "inline-block"
+      : "none";
+
+  artifactTimestamp.textContent =
+    turn === 0 ? "Default" : `Generated at Turn ${turn}`;
+  artifactVersionDisplay.textContent = `v${currentArtifactVersionIndex + 1} / v${versions.length}`;
+
+  artifactPrevBtn.disabled = currentArtifactVersionIndex === 0;
+  artifactNextBtn.disabled =
+    currentArtifactVersionIndex === versions.length - 1;
+}
+
+editArtifactBtn.onclick = () => enterEditMode();
+cancelEditBtn.onclick = () => exitEditMode();
+
+saveArtifactBtn.onclick = async () => {
+  const textarea = document.getElementById(
+    "artifact-editor",
+  ) as HTMLTextAreaElement | null;
+  if (!textarea || !currentViewedArtifact) return;
+
+  const newContent = textarea.value;
+  isEditingArtifact = false;
+
+  try {
+    const res = await fetch(
+      `/api/artifacts/${encodeURIComponent(currentViewedArtifact)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: newContent }),
+      },
+    );
+    if (res.ok) {
+      await rebuildArtifacts();
+      // Jump to the newly saved version (last)
+      const vers = currentArtifactVersions[currentViewedArtifact];
+      if (vers) {
+        currentArtifactVersionIndex = vers.length - 1;
+        renderCurrentArtifactVersion();
+      }
+    } else {
+      isEditingArtifact = true;
+      alert("Failed to save artifact");
+    }
+  } catch (e) {
+    isEditingArtifact = true;
+    console.error("Failed to save:", e);
+    alert("Failed to save artifact");
+  }
+};
+
+deleteVersionBtn.onclick = async () => {
+  if (!currentViewedArtifact) return;
+  const versions = currentArtifactVersions[currentViewedArtifact];
+  if (!versions || versions.length <= 1) return;
+
+  const label = `v${currentArtifactVersionIndex + 1} of ${versions.length}`;
+  if (!confirm(`Delete ${label} of ${currentViewedArtifact}?`)) return;
+
+  try {
+    const res = await fetch(
+      `/api/artifacts/${encodeURIComponent(currentViewedArtifact)}/versions/${currentArtifactVersionIndex}`,
+      { method: "DELETE" },
+    );
+    if (res.ok) {
+      const data = await res.json();
+      currentArtifactVersions = data.artifact_versions;
+      const newVersions = currentArtifactVersions[currentViewedArtifact];
+      if (currentArtifactVersionIndex >= newVersions.length) {
+        currentArtifactVersionIndex = newVersions.length - 1;
+      }
+      renderCurrentArtifactVersion();
+    } else {
+      const data = await res.json();
+      alert(data.error || "Failed to delete version");
+    }
+  } catch (e) {
+    console.error("Failed to delete:", e);
+    alert("Failed to delete version");
+  }
+};
+
+artifactPrevBtn.onclick = () => {
+  if (currentArtifactVersionIndex > 0) {
+    isEditingArtifact = false;
+    currentArtifactVersionIndex--;
+    renderCurrentArtifactVersion();
+  }
+};
+
+artifactNextBtn.onclick = () => {
+  if (
+    currentViewedArtifact &&
+    currentArtifactVersionIndex <
+      currentArtifactVersions[currentViewedArtifact].length - 1
+  ) {
+    isEditingArtifact = false;
+    currentArtifactVersionIndex++;
+    renderCurrentArtifactVersion();
+  }
+};
+
+function refreshAgentsUI(agents: string[]) {
+  availableAgents = agents;
+  agentList.innerHTML = "";
+  agents.forEach((name) => {
+    const isRunning = runningAgents.includes(name);
+
+    const item = document.createElement("div");
+    item.className = "artifact-item"; // Reuse same style
+    item.style.display = "flex";
+    item.style.justifyContent = "space-between";
+    item.style.alignItems = "center";
+    if (isRunning) {
+      item.style.color = "var(--accent)";
+    }
+
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = isRunning ? `⚙️ ${name}` : name;
+    item.appendChild(nameSpan);
+
+    const runBtn = document.createElement("button");
+    runBtn.textContent = isRunning ? "..." : "Run";
+    runBtn.disabled = isRunning || isThinking;
+    runBtn.style.padding = "2px 8px";
+    runBtn.style.fontSize = "0.8em";
+    runBtn.onclick = (e) => {
+      e.stopPropagation();
+      runAgent(name);
+    };
+    item.appendChild(runBtn);
+
+    agentList.appendChild(item);
+  });
+}
+
+let knownArtifactNames: string[] = [];
+let currentArtifactContent: Record<string, string> = {};
+
+function refreshArtifactsUI(
+  artifacts: Record<string, string>,
+  versionCounts: Record<string, number>,
+) {
+  const artifactNames = Object.keys(artifacts);
+
+  // Cache current content for instant display on click
+  currentArtifactContent = { ...currentArtifactContent, ...artifacts };
+
+  // Skip DOM rebuild if artifact names haven't changed
+  const namesChanged =
+    JSON.stringify(artifactNames) !== JSON.stringify(knownArtifactNames);
+  knownArtifactNames = artifactNames;
+
+  if (namesChanged) {
+    artifactList.innerHTML = "";
+    for (const name of artifactNames) {
+      const item = document.createElement("div");
+      item.className = "artifact-item";
+      item.textContent = name;
+      item.onclick = () => openArtifact(name);
+      artifactList.appendChild(item);
+    }
+  }
+
+  if (artifactNames.length === 0) {
+    artifactContent.style.display = "none";
+  } else {
+    // Don't clobber the editor while the user is typing
+    if (isEditingArtifact) return;
+
+    // If the currently viewed artifact is still present, show updated content
+    // immediately and refresh version history in background
+    const currentName = currentViewedArtifact;
+    if (currentName && artifacts[currentName] !== undefined) {
+      // Show latest content right away (single version, no nav)
+      currentArtifactVersions[currentName] = [
+        [artifacts[currentName], versionCounts[currentName] || 0],
+      ];
+      currentArtifactVersionIndex = 0;
+      renderCurrentArtifactVersion();
+
+      // Fetch full version history in background
+      fetchArtifactVersions(currentName).then((vers) => {
+        if (vers.length > 0) {
+          currentArtifactVersionIndex = vers.length - 1;
+          renderCurrentArtifactVersion();
+        }
+      });
+    }
+  }
+}
+
+async function openArtifact(name: string) {
+  // Close sidebar if on mobile
+  if (window.innerWidth <= 768) {
+    toggleSidebar();
+  }
+
+  chatContainer.style.display = "none";
+  mainArtifactView.style.display = "flex";
+  backBtn.style.display = "inline-block";
+
+  isEditingArtifact = false;
+  currentViewedArtifact = name;
+
+  // Show cached current content immediately
+  if (currentArtifactContent[name] !== undefined) {
+    currentArtifactVersions[name] = [[currentArtifactContent[name], 0]];
+    currentArtifactVersionIndex = 0;
+    renderCurrentArtifactVersion();
+  }
+
+  // Fetch full version history in background for nav + editing
+  const vers = await fetchArtifactVersions(name);
+  if (vers.length > 0) {
+    currentArtifactVersionIndex = vers.length - 1;
+    renderCurrentArtifactVersion();
   }
 }
 
 function addMessageUI(role: string, content: string) {
   const div = document.createElement("div");
   div.className = `message ${role}`;
-  div.innerHTML = `<strong>${role === "user" ? "You" : "Assistant"}:</strong> ${content}`;
+  // Auto-link any image paths to actual img tags for inline viewing
+  let htmlContent = content.replace(
+    /(?:\!\[.*?\]\()?(\/images\/[a-zA-Z0-9_\-\.]+\.png)\)?/g,
+    '<img src="$1" style="max-width: 100%; height: auto; display: block; margin: 0.5rem 0;" />',
+  );
+  div.innerHTML = `<strong>${role}:</strong> ${htmlContent}`;
   messagesDiv.appendChild(div);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
@@ -85,28 +629,18 @@ function renderHistory() {
   deleteBtn.disabled = conversationHistory.length === 0 || isThinking;
 }
 
-function loadHistory() {
-  const saved = localStorage.getItem("paludoroHistory");
-  if (saved) {
-    try {
-      conversationHistory = JSON.parse(saved);
-    } catch (e) {
-      conversationHistory = [];
-    }
-  } else {
-    conversationHistory = [];
-  }
-  renderHistory();
-  rebuildFiles();
-}
-
 async function sendMessage() {
   const text = userInput.value.trim();
   if (!text || isThinking) return;
 
   userInput.value = "";
-  conversationHistory.push({ role: "user", content: text, raw_content: text });
-  saveHistory();
+  conversationHistory.push({
+    role: userRoleName,
+    content: text,
+    raw_content: text,
+  });
+  // Do NOT saveHistory() here. The backend transcript agent will append /dev/stdin
+  // to chat_history.sxpb. If we saveHistory() here, it duplicates the User message.
   renderHistory();
   setThinking(true);
 
@@ -114,33 +648,23 @@ async function sendMessage() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: conversationHistory }),
+      body: JSON.stringify({ history: conversationHistory, message: text }),
     });
 
     const data = await res.json();
     if (data.error) {
       alert(data.error);
-      // Remove the user message since it failed
-      conversationHistory.pop();
-      saveHistory();
-      renderHistory();
       return;
     }
-
-    conversationHistory.push(data.message);
-    saveHistory();
-    renderHistory();
-    refreshFilesUI(data.files || {});
+    // Capture the trigger gen so the poll can detect when this pipeline finishes
+    if (typeof data.trigger_gen === "number") {
+      clientTriggerGen = data.trigger_gen;
+    }
   } catch (e) {
-    alert("Connection error.");
-    conversationHistory.pop();
-    saveHistory();
-    renderHistory();
+    console.warn("Connection error. Polling will attempt recovery.");
   } finally {
-    setThinking(false);
     rerollBtn.disabled = false;
     deleteBtn.disabled = false;
-    userInput.focus();
   }
 }
 
@@ -149,10 +673,11 @@ async function rerollLast() {
   if (conversationHistory.length === 0) return;
 
   if (
-    conversationHistory[conversationHistory.length - 1].role === "assistant"
+    conversationHistory[conversationHistory.length - 1].role.toLowerCase() !==
+    "user"
   ) {
     conversationHistory.pop();
-    saveHistory();
+    // saveHistory();
     renderHistory();
   }
 
@@ -161,7 +686,7 @@ async function rerollLast() {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: conversationHistory }),
+      body: JSON.stringify({ reroll: true }),
     });
 
     const data = await res.json();
@@ -169,16 +694,15 @@ async function rerollLast() {
       alert(data.error);
       return;
     }
-
-    conversationHistory.push(data.message);
-    saveHistory();
-    renderHistory();
-    refreshFilesUI(data.files || {});
+    // Capture the trigger gen so the poll can detect when this pipeline finishes
+    if (typeof data.trigger_gen === "number") {
+      clientTriggerGen = data.trigger_gen;
+    }
   } catch (e) {
-    alert("Connection error.");
+    console.warn("Connection error. Polling will attempt recovery.");
   } finally {
-    setThinking(false);
-    userInput.focus();
+    rerollBtn.disabled = false;
+    deleteBtn.disabled = false;
   }
 }
 
@@ -188,21 +712,25 @@ async function deleteLastTurn() {
   if (!confirm("Delete the last user message and assistant response?")) return;
 
   if (
-    conversationHistory[conversationHistory.length - 1].role === "assistant"
+    conversationHistory[conversationHistory.length - 1].role.toLowerCase() !==
+    "user"
   ) {
     conversationHistory.pop();
   }
   if (
     conversationHistory.length > 0 &&
-    conversationHistory[conversationHistory.length - 1].role === "user"
+    (conversationHistory[conversationHistory.length - 1].role ===
+      userRoleName ||
+      conversationHistory[conversationHistory.length - 1].role === "User" ||
+      conversationHistory[conversationHistory.length - 1].role === "user")
   ) {
     conversationHistory.pop();
   }
 
   saveHistory();
   renderHistory();
-  await rebuildFiles();
-  userInput.focus();
+  await rebuildArtifacts();
+  // userInput.focus();
 }
 
 async function clearChat() {
@@ -212,9 +740,9 @@ async function clearChat() {
   conversationHistory = [];
   saveHistory();
   renderHistory();
-  refreshFilesUI({});
-  fileContent.style.display = "none";
-  userInput.focus();
+  refreshArtifactsUI({}, {});
+  artifactContent.style.display = "none";
+  // userInput.focus();
 }
 
 sendBtn.onclick = sendMessage;
@@ -222,10 +750,221 @@ clearBtn.onclick = clearChat;
 rerollBtn.onclick = rerollLast;
 deleteBtn.onclick = deleteLastTurn;
 
+moreBtn.onclick = () => {
+  const isHidden = extraOptions.style.display === "none";
+  extraOptions.style.display = isHidden ? "flex" : "none";
+  moreBtn.textContent = isHidden ? "«" : "⋯";
+};
+
+refreshBtn.onclick = () => {
+  window.location.reload();
+};
+
 userInput.onkeydown = (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
+  }
+};
+
+setInterval(async () => {
+  try {
+    const requestedLen = conversationHistory.length;
+    const res = await fetch(`/api/poll?history_len=${requestedLen}`);
+    if (res.ok) {
+      const data = await res.json();
+
+      let needsRebuild = false;
+
+      // Append new history entries if found
+      if (data.new_history && data.new_history.length > 0) {
+        console.log("Polling found new history entries, syncing...");
+        let added = false;
+        for (let i = 0; i < data.new_history.length; i++) {
+          const targetIndex = requestedLen + i;
+          if (targetIndex >= conversationHistory.length) {
+            conversationHistory.push(data.new_history[i]);
+            added = true;
+          }
+        }
+        if (added) {
+          renderHistory();
+          needsRebuild = true;
+          setThinking(false);
+        }
+      }
+
+      if (data.artifacts && Object.keys(data.artifacts).length > 0) {
+        needsRebuild = true;
+        let lastAsst = [...conversationHistory]
+          .reverse()
+          .find((m) => m.role.toLowerCase() !== "user");
+        if (lastAsst) {
+          for (const [artipath, content] of Object.entries(data.artifacts)) {
+            // Append only if not already present in raw_content
+            if (!lastAsst.raw_content?.includes(`>${artipath}`)) {
+              lastAsst.raw_content += `\n\n\`\`\`sxpb > ${artipath}\n${content}\n\`\`\`\n`;
+            }
+          }
+        }
+      }
+
+      if (data.running_agents) {
+        const newRunning = data.running_agents;
+        if (JSON.stringify(newRunning) !== JSON.stringify(runningAgents)) {
+          runningAgents = newRunning;
+          refreshAgentsUI(availableAgents);
+        }
+      }
+
+      // Track pipeline state to detect completion (including failures).
+      // On the first poll after setThinking(true), clientTriggerGen is null —
+      // capture the current trigger count as the generation we're waiting for.
+      // Reset thinking when finishes >= triggers (pipeline done, success or fail).
+      if (isThinking) {
+        if (
+          clientTriggerGen === null &&
+          typeof data.pipeline_triggers === "number"
+        ) {
+          clientTriggerGen = data.pipeline_triggers;
+        }
+        if (
+          clientTriggerGen !== null &&
+          typeof data.pipeline_finishes === "number" &&
+          data.pipeline_finishes >= clientTriggerGen
+        ) {
+          setThinking(false);
+        }
+      }
+
+      if (needsRebuild) {
+        rebuildArtifacts();
+      }
+    }
+  } catch (e) {
+    // Ignore polling errors
+  }
+}, 2000);
+
+// ---------------------------------------------------------------------------
+// LLM Request Log
+// ---------------------------------------------------------------------------
+const llmLogBtn = document.getElementById("llm-log-btn") as HTMLButtonElement;
+const llmLogOverlay = document.getElementById(
+  "llm-log-overlay",
+) as HTMLDivElement;
+const llmLogCloseBtn = document.getElementById(
+  "llm-log-close-btn",
+) as HTMLButtonElement;
+const llmLogContent = document.getElementById(
+  "llm-log-content",
+) as HTMLDivElement;
+
+function escapeHtml(text: string): string {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function renderLlmLog(requests: any[]) {
+  if (requests.length === 0) {
+    llmLogContent.innerHTML =
+      '<p style="color: #888; text-align: center">No LLM requests recorded yet.</p>';
+    return;
+  }
+
+  // Show newest first
+  const sorted = [...requests].reverse();
+
+  llmLogContent.innerHTML = sorted
+    .map((req, i) => {
+      const isError = !!req.error;
+      const borderColor = isError ? "var(--danger)" : "#4a4";
+      const statusIcon = isError ? "❌" : "✅";
+      const kindBadge = req.kind === "image" ? "🖼️" : "💬";
+
+      // Build messages preview
+      let messagesPreview = "";
+      if (req.request_messages && req.request_messages.length > 0) {
+        messagesPreview = req.request_messages
+          .map((m: any) => {
+            const role = escapeHtml(m.role || "?");
+            const content = escapeHtml(
+              typeof m.content === "string"
+                ? m.content
+                : JSON.stringify(m.content),
+            );
+            return `<div style="margin: 0.25rem 0; padding: 0.35rem 0.5rem; background: #1a1a1a; border-radius: 4px;"><span style="color: var(--accent); font-weight: bold;">${role}:</span> <span style="color: #ccc; white-space: pre-wrap;">${content}</span></div>`;
+          })
+          .join("");
+      }
+
+      // Response or error
+      let responseBlock = "";
+      if (isError) {
+        responseBlock = `<details style="margin-top: 0.5rem;"><summary style="cursor: pointer; color: var(--danger); font-size: 0.85em;">Error</summary><div style="padding: 0.5rem; background: #2a1111; border-left: 3px solid var(--danger); border-radius: 4px; margin-top: 0.25rem;"><span style="color: #faa;">${escapeHtml(req.error || "")}</span></div></details>`;
+      } else if (req.response) {
+        responseBlock = `<details style="margin-top: 0.5rem;"><summary style="cursor: pointer; color: #4a4; font-size: 0.85em;">Response</summary><div style="padding: 0.5rem; background: #112a11; border-left: 3px solid #4a4; border-radius: 4px; margin-top: 0.25rem;"><pre style="color: #cfc; margin: 0; white-space: pre-wrap; word-break: break-word;">${escapeHtml(req.response)}</pre></div></details>`;
+      } else {
+        responseBlock = `<div style="margin-top: 0.5rem; color: #888;">(empty response)</div>`;
+      }
+
+      return `
+        <div style="margin-bottom: 1rem; border-left: 3px solid ${borderColor}; padding: 0.5rem 0.75rem; background: #1e1e1e; border-radius: 4px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; flex-wrap: wrap; gap: 0.3rem;">
+            <span>${statusIcon} ${kindBadge} <strong style="color: var(--accent);">${escapeHtml(req.agent || "?")}</strong></span>
+            <span style="color: #888; font-size: 0.8em;">
+              ${formatTimestamp(req.timestamp)} &middot; ${req.duration}s &middot; ${escapeHtml(req.model || "?")}
+            </span>
+          </div>
+          <details>
+            <summary style="cursor: pointer; color: #aaa; font-size: 0.85em;">Messages (${req.request_messages?.length || 0})</summary>
+            ${messagesPreview}
+          </details>
+          ${responseBlock}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+async function openLlmLog() {
+  llmLogOverlay.style.display = "flex";
+  llmLogContent.innerHTML =
+    '<p style="color: #888; text-align: center">Loading...</p>';
+  try {
+    const res = await fetch("/api/llm-requests");
+    if (res.ok) {
+      const data = await res.json();
+      renderLlmLog(data.requests || []);
+    } else {
+      llmLogContent.innerHTML =
+        '<p style="color: var(--danger);">Failed to load LLM log.</p>';
+    }
+  } catch (e) {
+    llmLogContent.innerHTML =
+      '<p style="color: var(--danger);">Connection error.</p>';
+  }
+}
+
+llmLogBtn.onclick = openLlmLog;
+
+llmLogCloseBtn.onclick = () => {
+  llmLogOverlay.style.display = "none";
+};
+
+llmLogOverlay.onclick = (e) => {
+  if (e.target === llmLogOverlay) {
+    llmLogOverlay.style.display = "none";
   }
 };
 

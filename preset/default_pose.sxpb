@@ -1,0 +1,15 @@
+("")
+(stance "" perched on a sun-warmed boulder, head turned sharply to look over her shoulder)
+(body "" sitting back on haunches, front legs planted, spine arched in alert)
+(head (brow raised))
+(wings ruffled)
+(tail (mid-sway) ("" sweeping across stone))
+(legs
+ (fore
+  (right (raised) ("" one talon extended) (gesture dismissive))
+  (left (planted) ("" firmly on boulder))
+ )
+ (hind
+  ("" folded under body, poised to spring)
+ )
+)

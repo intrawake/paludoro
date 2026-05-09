@@ -1,7 +1,89 @@
-(chat_model
- (api_url http://atomman-0-host:11435/v1)
- (name openrouter/openrouter/free)
-)
 (server
  (port 8000)
+)
+(expose_filepaths (())
+ anatomy.sxpb
+ default_mood.sxpb
+ default_pose.sxpb
+ default_cosmetic.sxpb
+ default_scene.sxpb
+ default_camera.sxpb
+ default_style.sxpb
+)
+(chat_history chat_history.sxpb)
+
+(agent_dict ()
+ (transcript
+  ((generate_as transcript)
+   (remote_by_artipath ()
+    (dialogue_line.txt (name Ritika))
+    (/dev/stdin (name User))
+   )
+   (expose chat_history.sxpb)
+  )
+ )
+ (main
+  ((generate_as text)
+   (model
+    (name openrouter/openrouter/owl-alpha)
+   )
+  )
+  ((prompt_as filepath)
+   main_prompt.md
+  )
+  (remotes (())
+   chat_history.sxpb
+   anatomy.sxpb
+  )
+  (exposes (())
+   dialogue_line.txt
+   cosmetic.sxpb
+   mood.sxpb
+   pose.sxpb
+   scene.sxpb
+   camera.sxpb
+   style.sxpb
+  )
+  (expose_by_artipath (())
+   (cosmetic.sxpb (default default_cosmetic.sxpb))
+   (mood.sxpb (default default_mood.sxpb))
+   (pose.sxpb (default default_pose.sxpb))
+   (scene.sxpb (default default_scene.sxpb))
+   (camera.sxpb (default default_camera.sxpb))
+   (style.sxpb (default default_style.sxpb))
+  )
+ )
+ (avatar_design
+  ((generate_as text)
+   (model
+    (name aistudio/gemma-4-31b-it)
+   )
+  )
+  ((prompt_as filepath)
+   avatar_design_prompt.md
+  )
+  (remotes (())
+   anatomy.sxpb
+   cosmetic.sxpb
+   mood.sxpb
+   pose.sxpb
+   scene.sxpb
+   camera.sxpb
+   style.sxpb
+  )
+  (expose_by_artipath (())
+   (image.txt (visible +false))
+  )
+ )
+ (draw
+  ((generate_as image)
+   (model
+    (name sd.cpp/flux2-klein)
+   )
+   (expose image.png)
+  )
+  ((prompt_as remote)
+   image.txt
+  )
+ )
 )

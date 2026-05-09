@@ -1,0 +1,35 @@
+("")
+(description "" A private everyday moment interrupted in a beautiful mountain garden)
+(environment "" a secluded terraced garden carved into a misty mountainside)
+(weather "" cool breezy bright morning sunlight)
+(lighting soft (primary "" dappled sunlight filtering through flowering vines) (accents "" visible pollen and water droplets suspended in the morning air))
+(mood intimate everyday slightly-surprised candid)
+
+(terrain
+ (ground stone mossy (thyme wild patches))
+ (rocks smooth weathered granite ("" outcroppings perfect for perching))
+ (perch sun-warmed boulder)
+)
+(flora
+ (trees gnarled ("" cherry blossoms) (pink soft) bloom)
+ (vines wisteria ("" cascading over ancient stone arches))
+ (flowers scattered (wildflowers alpine) (colors purple gold))
+)
+(props
+ (hoard
+  ("" a small collection of shiny trinkets arranged on a flat stone)
+  coins
+  (gem polished)
+  (bell tiny)
+ )
+ (comfort (cushion silk))
+ (food (dish stone ("" filled with fresh water and berries)))
+)
+(lighting
+ (primary warm (sun morning) (shadows soft))
+ (secondary "" warm specular highlights on the polished ruby scales)
+)
+(atmosphere
+ (air fresh ("" morning dew) wildflowers (stone warm))
+ (sound (leaves rustle) (waterfall distant) (scales clink))
+)

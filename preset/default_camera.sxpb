@@ -1,0 +1,8 @@
+("")
+(shot "" low-angle medium shot)
+(lens "" 50mm macro)
+(distance "" 2 feet)
+(dof
+ (aperture "" f/2.8)
+ (depth shallow)
+)

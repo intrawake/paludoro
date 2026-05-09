@@ -5,70 +5,82 @@ from typing import Dict, List, Tuple
 
 @dataclass
 class PaludoroSession:
-    files: Dict[str, str] = field(default_factory=dict)
-    # history stores (role, content, raw_content)
-    # raw_content is used for rebuilding the virtual filesystem
-    history: List[Tuple[str, str, str]] = field(default_factory=list)
+    artifacts: Dict[str, str] = field(default_factory=dict)
+    default_artifacts: Dict[str, str] = field(default_factory=dict)
+    # artipath -> List[(content, turn)]
+    artifact_versions: Dict[str, List[Tuple[str, int]]] = field(default_factory=dict)
+    dirty_artifacts: set = field(default_factory=set)
+    running_agents: set = field(default_factory=set)
+    pipeline_triggers: int = 0
+    pipeline_finishes: int = 0
+    # List of functions (artipath, content) -> content
+    on_save_hooks: List = field(default_factory=list)
 
-    def save_file(self, name: str, content: str):
-        self.files[name] = content.strip()
+    def save_artifact(
+        self, artipath: str, content: str, turn: int = -1, create_version: bool = True
+    ):
+        for hook in self.on_save_hooks:
+            content = hook(artipath, content)
 
-    def add_message(self, role: str, content: str, raw_content: str = ""):
-        self.history.append((role, content, raw_content or content))
+        clean_content = content.strip()
+        if self.artifacts.get(artipath) != clean_content:
+            self.artifacts[artipath] = clean_content
+            self.dirty_artifacts.add(artipath)
+
+            if not create_version:
+                return
+
+            if artipath not in self.artifact_versions:
+                self.artifact_versions[artipath] = []
+
+            # If turn is -1, just use a sequential number based on version length
+            display_turn = turn if turn != -1 else len(self.artifact_versions[artipath])
+
+            self.artifact_versions[artipath].append((clean_content, display_turn))
 
     def reset(self):
-        self.files.clear()
-        self.history.clear()
+        self.artifacts.clear()
+        self.artifacts.update(self.default_artifacts)
+        self.artifact_versions.clear()
+        for k, v in self.default_artifacts.items():
+            self.artifact_versions[k] = [(v, 0)]
+        self.dirty_artifacts.update(self.artifacts.keys())
 
-    def delete_last_turn(self):
-        """Removes the last user message and the last assistant message."""
-        # Pop assistant message
-        if self.history and self.history[-1][0] == "assistant":
-            self.history.pop()
-        # Pop user message
-        if self.history and self.history[-1][0] == "user":
-            self.history.pop()
-        self.rebuild_files()
+    def to_dict(self) -> dict:
+        return {
+            "artifacts": self.artifacts,
+            "artifact_versions": self.artifact_versions,
+        }
 
-    def pop_assistant_message(self):
-        """Removes the last assistant message (for reroll)."""
-        if self.history and self.history[-1][0] == "assistant":
-            self.history.pop()
-            self.rebuild_files()
-
-    def rebuild_files(self):
-        """Re-parses all history to restore the file state."""
-        self.files.clear()
-        for role, _, raw in self.history:
-            if role == "assistant":
-                _, new_files = parse_assistant_response(raw)
-                for name, content in new_files.items():
-                    self.save_file(name, content)
+    def from_dict(self, data: dict):
+        self.artifacts = data.get("artifacts", {})
+        self.artifact_versions = data.get("artifact_versions", {})
+        self.dirty_artifacts.update(self.artifacts.keys())
 
 
 def parse_assistant_response(content: str) -> Tuple[str, Dict[str, str]]:
     """
-    Extracts virtual file saves from the assistant response.
+    Extracts virtual artifact saves from the assistant response.
     Supports:
-    1. ```sxpb >filename.sxpb ... ```
-    2. >filename.sxpb (until next empty line or >)
+    1. ```sxpb >artipath.sxpb ... ```
+    2. >artipath.sxpb (until next empty line or >)
     """
-    new_files = {}
+    new_artifacts = {}
     clean_response = content
 
     # 1. Match Markdown Code Blocks first
-    # This matches: optional newlines + ```sxpb [whitespace] >filename [whitespace]\n[content]\n``` [whitespace] + optional newlines
-    block_pattern = r"(\n*)```sxpb\s+>([\w\-\.]+)[ \t]*\n(.*?)\n```[ \t]*(\n*)"
+    # This matches: optional newlines + ```[lang] [whitespace] >artipath [whitespace]\n[content]\n``` [whitespace] + optional newlines
+    block_pattern = r"(\n*)[ \t]*```[ \t]*\w+[ \t]*>[ \t]*([\w\-\.]+)[ \t]*\r?\n(.*?)\r?\n[ \t]*```[ \t]*(\n*)"
     matches = list(re.finditer(block_pattern, clean_response, re.DOTALL))
 
     # We process in reverse to not mess up indices when removing
     for match in reversed(matches):
         pre_newlines = len(match.group(1))
-        filename = match.group(2)
-        file_content = match.group(3).strip()
+        artipath = match.group(2)
+        artifact_content = match.group(3).strip()
         post_newlines = len(match.group(4))
 
-        new_files[filename] = file_content
+        new_artifacts[artipath] = artifact_content
 
         # Replacement: the max number of newlines found around the block
         replacement = "\n" * max(pre_newlines, post_newlines)
@@ -79,19 +91,19 @@ def parse_assistant_response(content: str) -> Tuple[str, Dict[str, str]]:
             + clean_response[match.end() :]
         )
 
-    # 2. Match bare >filename.sxpb lines
-    # This matches the >filename and then only subsequent lines that start with ( or ;
-    # We allow optional trailing spaces after the filename here too.
-    bare_pattern = r"(?:\n|^)\s*>([\w\-\.]+)[ \t]*\n((?:^[ \t]*[\(;].*$\n?)+)"
+    # 2. Match bare >artipath.sxpb lines
+    # This matches the >artipath and then only subsequent lines that start with ( or ;
+    # We allow optional trailing spaces after the artipath here too.
+    bare_pattern = r"(?:\n|^)\s*>[ \t]*([\w\-\.]+)[ \t]*\n((?:^[ \t]*[\(;].*$\n?)+)"
     matches = list(re.finditer(bare_pattern, clean_response, re.MULTILINE))
 
     for match in reversed(matches):
-        filename = match.group(1)
-        file_content = match.group(2).strip()
+        artipath = match.group(1)
+        artifact_content = match.group(2).strip()
         # Only add if not already found in a code block
-        if filename not in new_files:
-            new_files[filename] = file_content
+        if artipath not in new_artifacts:
+            new_artifacts[artipath] = artifact_content
         # Remove from response
         clean_response = clean_response[: match.start()] + clean_response[match.end() :]
 
-    return clean_response.strip(), new_files
+    return clean_response.strip(), new_artifacts
