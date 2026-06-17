@@ -892,7 +892,7 @@ function renderLlmLog(requests: any[]) {
       const statusIcon = isError ? "❌" : "✅";
       const kindBadge = req.kind === "image" ? "🖼️" : "💬";
 
-      // Build messages preview
+      // Build messages preview — each per-role message is individually collapsible
       let messagesPreview = "";
       if (req.request_messages && req.request_messages.length > 0) {
         messagesPreview = req.request_messages
@@ -903,7 +903,9 @@ function renderLlmLog(requests: any[]) {
                 ? m.content
                 : JSON.stringify(m.content),
             );
-            return `<div style="margin: 0.25rem 0; padding: 0.35rem 0.5rem; background: #1a1a1a; border-radius: 4px;"><span style="color: var(--accent); font-weight: bold;">${role}:</span> <span style="color: #ccc; white-space: pre-wrap;">${content}</span></div>`;
+            const preview =
+              content.length > 120 ? content.slice(0, 120) + "…" : content;
+            return `<details style="margin: 0.25rem 0; border: 1px solid #333; border-radius: 4px; overflow: hidden;"><summary style="cursor: pointer; color: var(--accent); font-weight: bold; padding: 0.35rem 0.5rem; background: #1a1a1a;">${role}</summary><div style="padding: 0.35rem 0.5rem; background: #111; color: #ccc; white-space: pre-wrap;">${content}</div></details>`;
           })
           .join("");
       }
@@ -958,15 +960,23 @@ async function openLlmLog() {
 
 llmLogBtn.onclick = openLlmLog;
 
-llmLogCloseBtn.onclick = () => {
+function closeLlmLog() {
   llmLogOverlay.style.display = "none";
-};
+}
+
+llmLogCloseBtn.onclick = closeLlmLog;
 
 llmLogOverlay.onclick = (e) => {
   if (e.target === llmLogOverlay) {
-    llmLogOverlay.style.display = "none";
+    closeLlmLog();
   }
 };
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && llmLogOverlay.style.display === "flex") {
+    closeLlmLog();
+  }
+});
 
 // Initial Load
 loadHistory();
