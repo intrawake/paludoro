@@ -36,6 +36,7 @@ def _log_request(
     error: str | None,
     duration: float,
     kind: str = "text",
+    reasoning: str | None = None,
 ) -> None:
     def truncate(s):
         if not isinstance(s, str):
@@ -59,6 +60,7 @@ def _log_request(
         "request_messages": clean_messages,
         "response": truncate(response),
         "error": error,
+        "reasoning": truncate(reasoning) if reasoning else None,
     }
     _llm_request_log.append(entry)
 
@@ -127,6 +129,7 @@ async def call_api(
                     res_data = resp.json()
                     msg = res_data["choices"][0]["message"]
                     content = msg.get("content")
+                    reasoning = msg.get("reasoning") or msg.get("reasoning_content")
                     if content is None:
                         _log_request(
                             model=model,
@@ -135,6 +138,7 @@ async def call_api(
                             response=None,
                             error="response content was None",
                             duration=time.time() - t0,
+                            reasoning=reasoning,
                         )
                         return ""
                     if record_content:
@@ -146,6 +150,7 @@ async def call_api(
                         response=content.strip(),
                         error=None,
                         duration=time.time() - t0,
+                        reasoning=reasoning,
                     )
                     return content.strip()
                 except httpx.HTTPStatusError as e:

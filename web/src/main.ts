@@ -912,6 +912,12 @@ function renderLlmLog(requests: any[]) {
 
       // Response or error
       let responseBlock = "";
+
+      // Reasoning (if available)
+      let reasoningBlock = "";
+      if (req.reasoning) {
+        reasoningBlock = `<details style="margin-top: 0.5rem;"><summary style="cursor: pointer; color: #88a; font-size: 0.85em;">Reasoning</summary><div style="padding: 0.5rem; background: #1a1a2a; border-left: 3px solid #88a; border-radius: 4px; margin-top: 0.25rem;"><pre style="color: #aac; margin: 0; white-space: pre-wrap; word-break: break-word;">${escapeHtml(req.reasoning)}</pre></div></details>`;
+      }
       if (isError) {
         responseBlock = `<details style="margin-top: 0.5rem;"><summary style="cursor: pointer; color: var(--danger); font-size: 0.85em;">Error</summary><div style="padding: 0.5rem; background: #2a1111; border-left: 3px solid var(--danger); border-radius: 4px; margin-top: 0.25rem;"><span style="color: #faa;">${escapeHtml(req.error || "")}</span></div></details>`;
       } else if (req.response) {
@@ -932,6 +938,7 @@ function renderLlmLog(requests: any[]) {
             <summary style="cursor: pointer; color: #aaa; font-size: 0.85em;">Messages (${req.request_messages?.length || 0})</summary>
             ${messagesPreview}
           </details>
+          ${reasoningBlock}
           ${responseBlock}
         </div>
       `;
