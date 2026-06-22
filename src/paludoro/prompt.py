@@ -13,7 +13,7 @@ def build_instruction_section(
     if accepted_artifacts is None:
         accepted_artifacts = []
 
-    writable = list(output_artipaths)
+    writable = list(dict.fromkeys(output_artipaths))
     if not writable:
         return ""
 

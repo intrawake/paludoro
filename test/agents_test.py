@@ -109,7 +109,7 @@ async def test_system_prompt_as_filepath():
         mock_res.return_value = MagicMock(
             exists=lambda: True, read_text=lambda: "You are a helpful assistant."
         )
-        mock_call.return_value = ">output.txt\nHello!\n"
+        mock_call.return_value = "```text >output.txt\nHello!\n```\n"
         await pipeline.run_agent("sys_agent")
 
         args, _ = mock_call.call_args
@@ -142,7 +142,7 @@ async def test_system_prompt_as_remote():
         patch("paludoro.agent_pipeline.call_api", new_callable=AsyncMock) as mock_call,
         patch("os.getenv", return_value="http://mock-api"),
     ):
-        mock_call.return_value = ">output.txt\nOK\n"
+        mock_call.return_value = "```text >output.txt\nOK\n```\n"
         await pipeline.run_agent("sys_agent")
 
         args, _ = mock_call.call_args
@@ -173,7 +173,7 @@ async def test_both_prompt_and_system_prompt():
         patch("paludoro.agent_pipeline.call_api", new_callable=AsyncMock) as mock_call,
         patch("os.getenv", return_value="http://mock-api"),
     ):
-        mock_call.return_value = ">output.txt\nArr!\n"
+        mock_call.return_value = "```text >output.txt\nArr!\n```\n"
         await pipeline.run_agent("dual_agent")
 
         args, _ = mock_call.call_args
@@ -485,3 +485,55 @@ async def test_type_check_partial_acceptance():
     assert "mood.sxpb" in changed
     assert session.artifacts["data.txt"] == "hello"
     assert "cheerful" in session.artifacts["mood.sxpb"]
+
+
+@pytest.mark.asyncio
+async def test_exposes_without_default_are_required():
+    """Artifacts in exposes but not in expose_by_artipath should be Required.
+    Those with defaults should be Optional.
+    """
+    config = {
+        "agent_dict": {
+            "agent": {
+                "generate_as": {"text": {"model": {"name": "mock"}}},
+                "prompt_as": {"remote": "instructions.txt"},
+                "exposes": [
+                    "dialogue_line.txt",
+                    "cosmetic.sxpb",
+                    "mood.sxpb",
+                ],
+                "expose_by_artipath": [
+                    {"cosmetic.sxpb": {"default": "default_cosmetic.sxpb"}},
+                    {"mood.sxpb": {"default": "default_mood.sxpb"}},
+                ],
+            }
+        }
+    }
+    session = PaludoroSession()
+    session.save_artifact("instructions.txt", "Do stuff.")
+    pipeline = AgentPipeline(config, session)
+
+    with (
+        patch(
+            "paludoro.agent_pipeline.call_api",
+            new_callable=AsyncMock,
+        ) as mock_call,
+        patch("os.getenv", return_value="http://mock-api"),
+    ):
+        mock_call.return_value = ">dialogue_line.txt\nHello!\n\n>cosmetic.sxpb\n(good)\n\n>mood.sxpb\n(happy)\n"
+        await pipeline.run_agent("agent")
+
+        # Check the prompt sent to the model
+        args, _ = mock_call.call_args
+        messages = args[1]
+        user_msg = next(m for m in messages if m["role"] == "user")
+
+        assert "Required: dialogue_line.txt" in user_msg["content"], (
+            "dialogue_line.txt has no default, should be Required"
+        )
+        assert "Optional: cosmetic.sxpb, mood.sxpb" in user_msg["content"], (
+            "cosmetic.sxpb and mood.sxpb have defaults, should be Optional"
+        )
+        assert "You may write any of" not in user_msg["content"], (
+            "Should not use fallback 'You may write any of'"
+        )

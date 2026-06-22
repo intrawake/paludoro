@@ -95,16 +95,28 @@ class AgentPipeline:
             eba = agent_config.get("expose_by_artipath", [])
             required_artipaths = []
             exclude_artipaths = []
+            eba_keys = set()
             if isinstance(eba, MutableSequence):
                 for item in eba:
                     if isinstance(item, MutableMapping):
                         output_artipaths.extend(item.keys())
+                        eba_keys.update(item.keys())
                         for artipath, details in item.items():
                             if isinstance(details, MutableMapping):
                                 if details.get("required") is True:
                                     required_artipaths.append(artipath)
                                 if details.get("visible") is False:
                                     exclude_artipaths.append(artipath)
+
+            # Artifacts in exposes without a default in expose_by_artipath are required
+            original_exposes = list(agent_config.get("exposes", []))
+            if isinstance(original_exposes, MutableSequence):
+                for artipath in original_exposes:
+                    if artipath not in eba_keys and artipath not in required_artipaths:
+                        required_artipaths.append(artipath)
+
+            # Deduplicate while preserving order
+            output_artipaths = list(dict.fromkeys(output_artipaths))
 
             if "image" in generate_as:
                 # For image agents, we want the raw instruction text as the prompt
@@ -311,10 +323,18 @@ class AgentPipeline:
                                 accepted_so_far.add(a)
 
                         # Build structured error report
+                        failed_names = list(retry_names) + list(invalid_names)
                         lines = ["Failed output artifacts:"]
-                        for name in retry_names:
+                        for name in failed_names:
                             lines.append(f"- {name}")
                         lines.append("")
+
+                        # Add errors for invalid names (not in output_artipaths)
+                        for name in invalid_names:
+                            if name not in artifact_errors:
+                                artifact_errors[name] = (
+                                    "Not a valid output artifact — remove this artifact."
+                                )
 
                         instruction_section = build_instruction_section(
                             output_artipaths,
@@ -323,14 +343,15 @@ class AgentPipeline:
                             if accepted_so_far
                             else None,
                         )
-                        if instruction_section:
-                            lines.append(instruction_section.rstrip("\n"))
-                        lines.append("")
 
                         for name, err in artifact_errors.items():
                             lines.append(f"### Error for: {name}")
                             lines.append(err)
                             lines.append("")
+
+                        if instruction_section:
+                            lines.append(instruction_section.rstrip("\n"))
+                        lines.append("")
 
                         lines.append(
                             "Please retry, providing valid content only for the failed artifacts."
