@@ -27,10 +27,13 @@ def test_chat_persistence_and_polling():
     global_session.artifacts["chat_history.sxpb"] = history_sxpb
 
     # 2. Mock the AI API call (so main agent returns successfully)
-    mock_response = "Hello from Assistant! >dialogue_line.txt\nHello from Assistant!"
+    mock_response = "```sxpb > dialogue_line.txt\nHello from Assistant!\n```"
 
     # We patch run_agent from AgentPipeline? No, let's just patch call_api
-    with patch("paludoro.agent_pipeline.call_api", return_value=mock_response):
+    with (
+        patch("paludoro.agent_pipeline.call_api", return_value=mock_response),
+        patch("os.getenv", return_value="http://mock-api"),
+    ):
         # 3. Call chat.
         # Note: TestClient executes background tasks before returning.
         chat_req = {"history": [{"role": "User", "content": "Hi"}], "message": "Hi"}
@@ -46,17 +49,20 @@ def test_chat_persistence_and_polling():
         assert "artifacts" in stored_data
         assert "chat_history.sxpb" in stored_data["artifacts"]
 
-        # 5. Verify Polling returns the parsed history
-        poll_resp = client.get("/api/poll?history_len=0")
+        # 5. Verify Polling returns the history version (bumped)
+        poll_resp = client.get("/api/poll")
         assert poll_resp.status_code == 200
         poll_data = poll_resp.json()
         print(
             f"DEBUG chat_history: {global_session.artifacts.get('chat_history.sxpb')}"
         )
-        assert len(poll_data["new_history"]) >= 1
+        # history_version should have been bumped by the pipeline
+        assert poll_data["history_version"] >= 1
 
-        # Depending on how the pipeline executed, it should contain User and Assistant.
-        roles = [msg["role"] for msg in poll_data["new_history"]]
+        # Full history should contain the messages
+        hist_resp = client.get("/api/history")
+        hist_data = hist_resp.json()
+        roles = [msg["role"] for msg in hist_data["history"]]
         assert "User" in roles
 
 

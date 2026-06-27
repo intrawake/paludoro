@@ -18,7 +18,8 @@ def test_failing_llm_message():
         "Let me know how else I can help! 👍"
     )
 
-    clean_msg, artifacts = parse_assistant_response(msg)
+    clean_msg, artifacts, malformed = parse_assistant_response(msg)
+    assert malformed == []
 
     print(f"DEBUG: Artifacts parsed: {list(artifacts.keys())}")
 
@@ -41,12 +42,14 @@ def test_failing_llm_message():
 
 def test_newline_normalization():
     msg = "Text before.\n\n\n```sxpb >file.sxpb\n(content)\n```\nText after."
-    clean, artifacts = parse_assistant_response(msg)
+    clean, artifacts, malformed = parse_assistant_response(msg)
+    assert malformed == []
     # 3 newlines before, 1 after. Max is 3.
     assert clean == "Text before.\n\n\nText after."
 
     msg2 = "Top.\n```sxpb >f.sxpb\n(c)\n```\n\nBottom."
-    clean2, artifacts2 = parse_assistant_response(msg2)
+    clean2, artifacts2, malformed2 = parse_assistant_response(msg2)
+    assert malformed2 == []
     # 1 before, 2 after. Max is 2.
     assert clean2 == "Top.\n\nBottom."
     print("✅ test_newline_normalization passed!")
@@ -61,7 +64,8 @@ def test_text_artifact_parsing():
         "\n"
         "Hope you like it!"
     )
-    clean, artifacts = parse_assistant_response(msg)
+    clean, artifacts, malformed = parse_assistant_response(msg)
+    assert malformed == []
     assert "image.txt" in artifacts
     assert artifacts["image.txt"] == "A cute sprite detective with auburn hair."
     assert "A cute sprite detective" not in clean

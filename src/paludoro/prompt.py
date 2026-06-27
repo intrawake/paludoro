@@ -72,14 +72,16 @@ def build_prompt(
         lines.append("")
 
     # Helper for adding artifacts with stripped whitespace and trailing newline
-    def add_artifacts(artifact_list):
+    def add_artifacts(artifact_list, arrow="<"):
         for artipath in artifact_list:
             if artipath in exclude_artipaths:
                 continue
             if artipath in session.artifacts:
                 content = session.artifacts[artipath].strip()
+                if not content:
+                    continue
                 lang = "text" if artipath.endswith(".txt") else "sxpb"
-                lines.append(f"```{lang} < {artipath}")
+                lines.append(f"```{lang} {arrow} {artipath}")
                 lines.append(content)
                 lines.append("```")
                 lines.append("")
@@ -97,11 +99,11 @@ def build_prompt(
 
     # 2. Remote / Readonly artifacts
     if input_artipaths:
-        add_artifacts(input_artipaths)
+        add_artifacts(input_artipaths, arrow="<")
 
     # 3. Exposed artifacts
     if output_artipaths:
-        add_artifacts(output_artipaths)
+        add_artifacts(output_artipaths, arrow=">")
 
     # 4. Instruction: which artifacts can/must be written
     instruction_section = build_instruction_section(

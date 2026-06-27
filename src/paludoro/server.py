@@ -96,6 +96,15 @@ def image_save_hook(artipath: str, content: str) -> str:
 global_session.on_save_hooks.append(image_save_hook)
 
 
+def history_version_hook(artipath: str, content: str) -> str:
+    if artipath == CHAT_HISTORY_ARTIFACT:
+        global_session.history_version += 1
+    return content
+
+
+global_session.on_save_hooks.append(history_version_hook)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -188,10 +197,7 @@ def parse_chat_history():
 
 
 @app.get("/api/poll")
-async def poll_updates(history_len: int = 0):
-    full_history = parse_chat_history()
-    new_history = full_history[history_len:] if len(full_history) > history_len else []
-
+async def poll_updates():
     res_artifacts = {}
     for artipath in list(global_session.dirty_artifacts):
         res_artifacts[artipath] = global_session.artifacts.get(artipath, "")
@@ -199,7 +205,7 @@ async def poll_updates(history_len: int = 0):
 
     return {
         "artifacts": res_artifacts,
-        "new_history": new_history,
+        "history_version": global_session.history_version,
         "running_agents": list(global_session.running_agents),
         "pipeline_triggers": global_session.pipeline_triggers,
         "pipeline_finishes": global_session.pipeline_finishes,

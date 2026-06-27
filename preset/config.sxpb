@@ -20,6 +20,11 @@
     (/dev/stdin (name User))
    )
    (expose chat_history.sxpb)
+   (forgetfulness
+    (threshold_turn_count 10)
+    (preserve_turn_count 6)
+    (expose chat_history.sxpb.old)
+   )
   )
  )
  (main
@@ -32,11 +37,13 @@
    main_prompt.md
   )
   (remotes (())
+   chat_history.sxpb.old
    chat_history.sxpb
    anatomy.sxpb
   )
   (exposes (())
    dialogue_line.txt
+   memory.txt
    cosmetic.sxpb
    mood.sxpb
    pose.sxpb

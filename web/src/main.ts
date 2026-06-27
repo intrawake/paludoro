@@ -9,12 +9,9 @@ const extraOptions = document.getElementById("extra-options") as HTMLDivElement;
 const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const artifactList = document.getElementById("artifact-list") as HTMLDivElement;
 const agentList = document.getElementById("agent-list") as HTMLDivElement;
-const artifactContent = document.getElementById(
-  "artifact-content",
-) as HTMLDivElement;
-
 let isThinking = false;
 let clientTriggerGen: number | null = null;
+let lastHistoryVersion = -1;
 let isEditingArtifact = false;
 let conversationHistory: {
   role: string;
@@ -50,7 +47,6 @@ function setThinking(val: boolean, triggerGen?: number) {
   sendBtn.disabled = val;
   rerollBtn.disabled = val;
   deleteBtn.disabled = val;
-  userInput.disabled = val;
   if (val) {
     sendBtn.textContent = "...";
   } else {
@@ -59,7 +55,7 @@ function setThinking(val: boolean, triggerGen?: number) {
 }
 
 function saveHistory() {
-  fetch("/api/history", {
+  return fetch("/api/history", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ history: conversationHistory }),
@@ -554,7 +550,7 @@ function refreshArtifactsUI(
   }
 
   if (artifactNames.length === 0) {
-    artifactContent.style.display = "none";
+    artifactContentArea.style.display = "none";
   } else {
     // Don't clobber the editor while the user is typing
     if (isEditingArtifact) return;
@@ -634,6 +630,7 @@ async function sendMessage() {
   if (!text || isThinking) return;
 
   userInput.value = "";
+  userInput.focus();
   conversationHistory.push({
     role: userRoleName,
     content: text,
@@ -665,6 +662,7 @@ async function sendMessage() {
   } finally {
     rerollBtn.disabled = false;
     deleteBtn.disabled = false;
+    userInput.focus();
   }
 }
 
@@ -703,6 +701,7 @@ async function rerollLast() {
   } finally {
     rerollBtn.disabled = false;
     deleteBtn.disabled = false;
+    userInput.focus();
   }
 }
 
@@ -738,10 +737,9 @@ async function clearChat() {
   if (!confirm("Are you sure you want to clear the entire session?")) return;
 
   conversationHistory = [];
-  saveHistory();
+  await saveHistory();
   renderHistory();
-  refreshArtifactsUI({}, {});
-  artifactContent.style.display = "none";
+  rebuildArtifacts();
   // userInput.focus();
 }
 
@@ -769,58 +767,25 @@ userInput.onkeydown = (e) => {
 
 setInterval(async () => {
   try {
-    const requestedLen = conversationHistory.length;
-    const res = await fetch(`/api/poll?history_len=${requestedLen}`);
+    const res = await fetch("/api/poll");
     if (res.ok) {
       const data = await res.json();
 
-      let needsRebuild = false;
-
-      // Append new history entries if found
-      if (data.new_history && data.new_history.length > 0) {
-        console.log("Polling found new history entries, syncing...");
-        let added = false;
-        for (let i = 0; i < data.new_history.length; i++) {
-          const targetIndex = requestedLen + i;
-          if (targetIndex >= conversationHistory.length) {
-            conversationHistory.push(data.new_history[i]);
-            added = true;
-          }
-        }
-        if (added) {
+      // --- History version check (authoritative for ALL history changes) ---
+      if (
+        data.history_version !== undefined &&
+        data.history_version !== lastHistoryVersion
+      ) {
+        const histRes = await fetch("/api/history");
+        if (histRes.ok) {
+          const histData = await histRes.json();
+          conversationHistory = histData.history || [];
           renderHistory();
-          needsRebuild = true;
-          setThinking(false);
+          lastHistoryVersion = data.history_version;
         }
       }
 
-      if (data.artifacts && Object.keys(data.artifacts).length > 0) {
-        needsRebuild = true;
-        let lastAsst = [...conversationHistory]
-          .reverse()
-          .find((m) => m.role.toLowerCase() !== "user");
-        if (lastAsst) {
-          for (const [artipath, content] of Object.entries(data.artifacts)) {
-            // Append only if not already present in raw_content
-            if (!lastAsst.raw_content?.includes(`>${artipath}`)) {
-              lastAsst.raw_content += `\n\n\`\`\`sxpb > ${artipath}\n${content}\n\`\`\`\n`;
-            }
-          }
-        }
-      }
-
-      if (data.running_agents) {
-        const newRunning = data.running_agents;
-        if (JSON.stringify(newRunning) !== JSON.stringify(runningAgents)) {
-          runningAgents = newRunning;
-          refreshAgentsUI(availableAgents);
-        }
-      }
-
-      // Track pipeline state to detect completion (including failures).
-      // On the first poll after setThinking(true), clientTriggerGen is null —
-      // capture the current trigger count as the generation we're waiting for.
-      // Reset thinking when finishes >= triggers (pipeline done, success or fail).
+      // --- Pipeline finish detection ---
       if (isThinking) {
         if (
           clientTriggerGen === null &&
@@ -834,11 +799,32 @@ setInterval(async () => {
           data.pipeline_finishes >= clientTriggerGen
         ) {
           setThinking(false);
+          rebuildArtifacts();
         }
       }
 
-      if (needsRebuild) {
-        rebuildArtifacts();
+      // --- Dirty artifacts (intermediate pipeline output) ---
+      if (data.artifacts && Object.keys(data.artifacts).length > 0) {
+        let lastAsst = [...conversationHistory]
+          .reverse()
+          .find((m) => m.role.toLowerCase() !== "user");
+        if (lastAsst) {
+          for (const [artipath, content] of Object.entries(data.artifacts)) {
+            if (!lastAsst.raw_content?.includes(`>${artipath}`)) {
+              lastAsst.raw_content += `\n\n\`\`\`sxpb > ${artipath}\n${content}\n\`\`\`\n`;
+            }
+          }
+          rebuildArtifacts();
+        }
+      }
+
+      // --- Running agents ---
+      if (data.running_agents) {
+        const newRunning = data.running_agents;
+        if (JSON.stringify(newRunning) !== JSON.stringify(runningAgents)) {
+          runningAgents = newRunning;
+          refreshAgentsUI(availableAgents);
+        }
       }
     }
   } catch (e) {

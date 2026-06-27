@@ -196,11 +196,68 @@ class AgentPipeline:
                                 _process_details(remote_name, details)
 
                 if changed:
+                    # Forgetfulness: rolling chat window via .old artifact split
+                    forget_config = transcript_config.get("forgetfulness")
+                    old_artipath = None
+                    if isinstance(forget_config, MutableMapping):
+                        threshold = forget_config.get("threshold_turn_count", 0)
+                        preserve = forget_config.get("preserve_turn_count", 0)
+                        old_artipath = forget_config.get("expose")
+                        if threshold > 0 and preserve > 0 and old_artipath:
+                            total_msgs = len(history_list)
+                            old_content = self.session.artifacts.get(old_artipath, "")
+                            old_exists = bool(old_content.strip())
+                            logger.info(
+                                f"[{agent_name}] forgetfulness check: total={total_msgs} threshold={threshold} preserve={preserve} old_exists={old_exists} old_content_len={len(old_content)}"
+                            )
+                            if total_msgs >= threshold and not old_exists:
+                                logger.info(
+                                    f"[{agent_name}] forgetfulness: FIRST CROSSING — overflow msgs to {old_artipath}"
+                                )
+                                # FIRST CROSSING: overflow to .old, keep preserve-count newest
+                                if total_msgs > preserve:
+                                    overflow = history_list[:-preserve]
+                                    history_list = history_list[-preserve:]
+                                    old_data = {"history": overflow}
+                                    old_str = (
+                                        "; Oldest chat history that will be forgotten after this turn.\n"
+                                        + sxpb.dumps(old_data)
+                                    )
+                                    self.session.save_artifact(old_artipath, old_str)
+                                    saved = self.session.artifacts.get(old_artipath, "")
+                                    logger.info(
+                                        f"[{agent_name}] forgetfulness: wrote {len(overflow)} msgs to {old_artipath}, saved_len={len(saved)}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[{agent_name}] forgetfulness: threshold reached but total_msgs({total_msgs}) <= preserve({preserve}), no overflow to split"
+                                    )
+                            elif old_exists:
+                                logger.info(
+                                    f"[{agent_name}] forgetfulness: CLEANUP — trimming & clearing {old_artipath}"
+                                )
+                                # CLEANUP: trim history to preserve-count, clear .old
+                                if total_msgs > preserve:
+                                    history_list = history_list[-preserve:]
+                                self.session.save_artifact(
+                                    old_artipath, "", create_version=False
+                                )
+                                logger.info(
+                                    f"[{agent_name}] forgetfulness: trimmed to {len(history_list)} msgs, cleared {old_artipath}"
+                                )
+                            else:
+                                logger.info(
+                                    f"[{agent_name}] forgetfulness: no action (total={total_msgs} < threshold={threshold} or old_exists={old_exists})"
+                                )
+
                     new_history_data = {"history": history_list}
                     new_history_str = sxpb.dumps(new_history_data)
                     self.session.save_artifact(expose_artipath, new_history_str)
                     logger.info(f"[{agent_name}] transcript updated {expose_artipath}")
-                    return [expose_artipath]
+                    changed_artifacts = [expose_artipath]
+                    if old_artipath:
+                        changed_artifacts.append(old_artipath)
+                    return changed_artifacts
                 return []
 
             if "text" in generate_as:
@@ -265,13 +322,20 @@ class AgentPipeline:
                         logger.error(f"[{agent_name}] Failed to get response.")
                         return sorted(accepted_so_far) if accepted_so_far else []
 
-                    clean_resp, new_artifacts = parse_assistant_response(response_raw)
+                    clean_resp, new_artifacts, malformed_errors = (
+                        parse_assistant_response(response_raw)
+                    )
 
                     valid_artifacts = {}
                     accepted_names = []
                     retry_names = []
                     invalid_names = []
                     artifact_errors = {}
+
+                    # Surface malformed artifact blocks as retry-worthy errors
+                    if malformed_errors:
+                        retry_names.append("response_format")
+                        artifact_errors["response_format"] = malformed_errors[0]
 
                     for a, content in new_artifacts.items():
                         if output_artipaths and a not in output_artipaths:
@@ -367,20 +431,12 @@ class AgentPipeline:
                         f"[{agent_name}] Generated artifacts: {list(new_artifacts.keys())}"
                     )
 
-                    # Save dialogue_line.txt if applicable
-                    if "dialogue_line.txt" in output_artipaths and clean_resp:
-                        if (
-                            self.session.artifacts.get("dialogue_line.txt")
-                            != clean_resp
-                        ):
-                            self.session.save_artifact("dialogue_line.txt", clean_resp)
-                            accepted_so_far.add("dialogue_line.txt")
-
-                    # Save all artifacts
+                    # Save new artifacts (don't overwrite already-accepted ones)
                     for artipath, content in new_artifacts.items():
-                        if self.session.artifacts.get(artipath) != content:
-                            self.session.save_artifact(artipath, content)
-                            accepted_so_far.add(artipath)
+                        if artipath not in accepted_so_far:
+                            if self.session.artifacts.get(artipath) != content:
+                                self.session.save_artifact(artipath, content)
+                                accepted_so_far.add(artipath)
 
                     return sorted(accepted_so_far)
 
@@ -441,10 +497,7 @@ class AgentPipeline:
                 limit = 2 if "transcript" in generate_as else 1
 
                 if agent_run_counts.get(a, 0) < limit:
-                    # Check if all remotes are present
-                    remotes = agent_config.get("remotes", [])
-                    if all(r in self.session.artifacts for r in remotes):
-                        agents_to_run.add(a)
+                    agents_to_run.add(a)
 
             # Sort or just iterate. Set iteration is non-deterministic, but keeping as is.
             for agent_name in agents_to_run:

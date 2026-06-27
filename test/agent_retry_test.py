@@ -85,8 +85,9 @@ def test_agent_invalid_write_retry():
         ):
             changed = await pipeline.run_agent("test_agent")
 
+        # allowed.sxpb was accepted on attempt 1; attempt 2 must not overwrite it
         assert changed == ["allowed.sxpb"]
-        assert session.artifacts.get("allowed.sxpb") == "(good 2)"
+        assert session.artifacts.get("allowed.sxpb") == "(good)"
         assert "bad.sxpb" not in session.artifacts
 
     asyncio.run(run_test())

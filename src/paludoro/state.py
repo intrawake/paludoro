@@ -13,6 +13,7 @@ class PaludoroSession:
     running_agents: set = field(default_factory=set)
     pipeline_triggers: int = 0
     pipeline_finishes: int = 0
+    history_version: int = 0
     # List of functions (artipath, content) -> content
     on_save_hooks: List = field(default_factory=list)
 
@@ -50,23 +51,42 @@ class PaludoroSession:
         return {
             "artifacts": self.artifacts,
             "artifact_versions": self.artifact_versions,
+            "pipeline_triggers": self.pipeline_triggers,
+            "pipeline_finishes": self.pipeline_finishes,
+            "history_version": self.history_version,
         }
 
     def from_dict(self, data: dict):
         self.artifacts = data.get("artifacts", {})
         self.artifact_versions = data.get("artifact_versions", {})
+        self.pipeline_triggers = data.get("pipeline_triggers", 0)
+        self.pipeline_finishes = data.get("pipeline_finishes", 0)
+        self.history_version = data.get("history_version", 0)
         self.dirty_artifacts.update(self.artifacts.keys())
 
 
-def parse_assistant_response(content: str) -> Tuple[str, Dict[str, str]]:
+def parse_assistant_response(content: str) -> Tuple[str, Dict[str, str], List[str]]:
     """
     Extracts virtual artifact saves from the assistant response.
     Supports:
     1. ```sxpb >artipath.sxpb ... ```
     2. >artipath.sxpb (until next empty line or >)
+
+    Returns (clean_response, new_artifacts, malformed_errors).
+    malformed_errors lists any code blocks that use < (read prefix) instead of > (write prefix).
     """
     new_artifacts = {}
+    malformed_errors: List[str] = []
     clean_response = content
+
+    # 0. Detect malformed < prefix blocks before extraction
+    malformed_pattern = r"```[ \t]*\w+[ \t]*<[ \t]*([\w\-\.]+)"
+    for m in re.finditer(malformed_pattern, clean_response):
+        name = m.group(1)
+        malformed_errors.append(
+            f"Wrong prefix on artifact block: used '<' for '{name}' — "
+            "use '>' to write artifacts, '<' means read-only."
+        )
 
     # 1. Match Markdown Code Blocks first
     # This matches: optional newlines + ```[lang] [whitespace] >artipath [whitespace]\n[content]\n``` [whitespace] + optional newlines
@@ -106,4 +126,4 @@ def parse_assistant_response(content: str) -> Tuple[str, Dict[str, str]]:
         # Remove from response
         clean_response = clean_response[: match.start()] + clean_response[match.end() :]
 
-    return clean_response.strip(), new_artifacts
+    return clean_response.strip(), new_artifacts, malformed_errors

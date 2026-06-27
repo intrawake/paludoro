@@ -1,6 +1,9 @@
 from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from typing import Optional
+from collections.abc import MutableMapping
+import sxpb
+from sxpb.types import SxpbMany
 from paludoro.state import PaludoroSession
 from paludoro.agent_pipeline import AgentPipeline
 
@@ -537,3 +540,237 @@ async def test_exposes_without_default_are_required():
         assert "You may write any of" not in user_msg["content"], (
             "Should not use fallback 'You may write any of'"
         )
+
+
+# ---------------------------------------------------------------------------
+# forgetfulness tests
+# ---------------------------------------------------------------------------
+
+
+def _make_forget_config(threshold=4, preserve=2):
+    return {
+        "agent_dict": {
+            "transcript": {
+                "generate_as": {
+                    "transcript": {
+                        "expose": "chat_history.sxpb",
+                        "forgetfulness": {
+                            "threshold_turn_count": threshold,
+                            "preserve_turn_count": preserve,
+                            "expose": "chat_history.sxpb.old",
+                        },
+                        "remote_by_artipath": [
+                            {"/dev/stdin": {"name": "User"}},
+                            {"dialogue_line.txt": {"name": "Assistant"}},
+                        ],
+                    }
+                },
+            },
+        }
+    }
+
+
+def _make_history(*messages):
+    """Build a chat_history.sxpb string from User/Assistant message pairs."""
+    entries = SxpbMany([])
+    for role, content in messages:
+        entries.append({role: content})
+    return sxpb.dumps({"history": entries})
+
+
+def _get_history_messages(history_str):
+    """Parse chat_history.sxpb and return list of (role, content) tuples."""
+    parsed = sxpb.loads(history_str, precise=True)
+    history_list = (
+        parsed.get("history", [])  # type: ignore
+        if isinstance(parsed, MutableMapping)
+        else []
+    )
+    result = []
+    for entry in history_list:
+        for role, content in entry.items():
+            result.append((role, content))
+    return result
+
+
+@pytest.mark.asyncio
+async def test_forgetfulness_below_threshold():
+    """No forgetfulness action when message count is below threshold."""
+    config = _make_forget_config(threshold=5, preserve=2)
+    session = PaludoroSession()
+
+    # 3 existing messages, below threshold of 5
+    session.artifacts["chat_history.sxpb"] = _make_history(
+        ("User", "a"), ("Assistant", "b"), ("User", "c")
+    )
+    session.artifacts["/dev/stdin"] = "d"
+
+    pipeline = AgentPipeline(config, session)
+    result = await pipeline.run_agent("transcript", triggered_by="/dev/stdin")
+
+    # No .old created
+    assert "chat_history.sxpb.old" not in session.artifacts
+    # History has 4 entries (original 3 + new)
+    msgs = _get_history_messages(session.artifacts["chat_history.sxpb"])
+    assert len(msgs) == 4
+    assert msgs[-1] == ("User", "d")
+    # No old_artipath returned since below threshold and no action taken
+    # (old_artipath is still appended because it's configured, but .old doesn't exist)
+    assert "chat_history.sxpb" in result
+
+
+@pytest.mark.asyncio
+async def test_forgetfulness_first_crossing():
+    """When history hits threshold, overflow is split into .old with fence comment."""
+    config = _make_forget_config(threshold=4, preserve=2)
+    session = PaludoroSession()
+
+    # 3 existing messages — adding 1 more hits threshold of 4
+    session.artifacts["chat_history.sxpb"] = _make_history(
+        ("User", "msg1"), ("Assistant", "msg2"), ("User", "msg3")
+    )
+    session.artifacts["/dev/stdin"] = "msg4"
+
+    pipeline = AgentPipeline(config, session)
+    result = await pipeline.run_agent("transcript", triggered_by="/dev/stdin")
+
+    # .old artifact created
+    assert "chat_history.sxpb.old" in session.artifacts
+    old_content = session.artifacts["chat_history.sxpb.old"]
+    assert "Oldest chat history that will be forgotten after this turn." in old_content
+    # Overflow (msgs 1-2) in .old
+    assert "msg1" in old_content
+    assert "msg2" in old_content
+    assert "msg3" not in old_content
+
+    # Main history trimmed to preserve=2: msg3 + new msg4
+    msgs = _get_history_messages(session.artifacts["chat_history.sxpb"])
+    assert len(msgs) == 2
+    assert msgs == [("User", "msg3"), ("User", "msg4")]
+
+    # Both artifacts returned as changed
+    assert "chat_history.sxpb" in result
+    assert "chat_history.sxpb.old" in result
+
+
+@pytest.mark.asyncio
+async def test_forgetfulness_cleanup():
+    """After first crossing, next invocation clears .old and trims history."""
+    config = _make_forget_config(threshold=4, preserve=2)
+    session = PaludoroSession()
+
+    # Simulate state AFTER first crossing: .old exists, history has 2 entries
+    session.artifacts["chat_history.sxpb"] = _make_history(
+        ("User", "msg3"), ("User", "msg4")
+    )
+    session.artifacts["chat_history.sxpb.old"] = (
+        "; Oldest chat history that will be forgotten after this turn.\n"
+        + _make_history(("User", "msg1"), ("Assistant", "msg2"))
+    )
+    session.artifacts["dialogue_line.txt"] = "msg5"
+
+    pipeline = AgentPipeline(config, session)
+    _ = await pipeline.run_agent("transcript", triggered_by="dialogue_line.txt")
+
+    # .old cleared
+    assert session.artifacts.get("chat_history.sxpb.old", "").strip() == ""
+    # History trimmed to preserve=2: msg4 + new msg5
+    msgs = _get_history_messages(session.artifacts["chat_history.sxpb"])
+    assert len(msgs) == 2
+    assert msgs == [("User", "msg4"), ("Assistant", "msg5")]
+
+
+@pytest.mark.asyncio
+async def test_forgetfulness_preserve_equals_threshold():
+    """When preserve == threshold, no overflow occurs but .old still cycles."""
+    config = _make_forget_config(threshold=4, preserve=4)
+    session = PaludoroSession()
+
+    session.artifacts["chat_history.sxpb"] = _make_history(
+        ("User", "a"), ("Assistant", "b"), ("User", "c")
+    )
+    session.artifacts["/dev/stdin"] = "d"
+
+    pipeline = AgentPipeline(config, session)
+    _ = await pipeline.run_agent("transcript", triggered_by="/dev/stdin")
+
+    # total_msgs (4) > preserve (4) is False, so no overflow
+    msgs = _get_history_messages(session.artifacts["chat_history.sxpb"])
+    assert len(msgs) == 4  # all messages kept
+    # .old should not be created (no overflow)
+    assert "chat_history.sxpb.old" not in session.artifacts
+
+
+@pytest.mark.asyncio
+async def test_forgetfulness_full_pipeline():
+    """End-to-end: user message triggers first crossing, assistant triggers cleanup.
+
+    Uses a MockAgentPipeline to verify the full cascade within one
+    on_artifacts_changed call.
+    """
+    config = {
+        "agent_dict": {
+            "transcript": {
+                "generate_as": {
+                    "transcript": {
+                        "expose": "chat_history.sxpb",
+                        "forgetfulness": {
+                            "threshold_turn_count": 4,
+                            "preserve_turn_count": 2,
+                            "expose": "chat_history.sxpb.old",
+                        },
+                        "remote_by_artipath": [
+                            {"/dev/stdin": {"name": "User"}},
+                            {"dialogue_line.txt": {"name": "Assistant"}},
+                        ],
+                    }
+                },
+                "remotes": ["/dev/stdin", "dialogue_line.txt"],
+            },
+            "main": {
+                "generate_as": {"text": {"model": {"name": "mock_model"}}},
+                "remotes": ["chat_history.sxpb.old", "chat_history.sxpb"],
+                "exposes": ["dialogue_line.txt"],
+            },
+        }
+    }
+
+    class PipelineSpy(AgentPipeline):
+        def __init__(self, c, s):
+            super().__init__(c, s)
+            self.run_history = []
+
+        async def run_agent(self, agent_name, triggered_by=None):
+            self.run_history.append((agent_name, triggered_by))
+            if agent_name == "transcript":
+                return await super().run_agent(agent_name, triggered_by=triggered_by)
+            elif agent_name == "main":
+                self.session.save_artifact("dialogue_line.txt", "mock response")
+                return ["dialogue_line.txt"]
+            return []
+
+    session = PaludoroSession()
+    # 3 messages in history — next user message hits threshold
+    session.artifacts["chat_history.sxpb"] = _make_history(
+        ("User", "old1"), ("Assistant", "old2"), ("User", "old3")
+    )
+    session.artifacts["/dev/stdin"] = "current"
+
+    pipeline = PipelineSpy(config, session)
+    await pipeline.on_artifacts_changed(["/dev/stdin"])
+
+    # Sequence: transcript(user) → main → transcript(assistant, cleanup)
+    assert [a for a, _ in pipeline.run_history] == ["transcript", "main", "transcript"]
+
+    # After full turn:
+    # - First transcript created .old and trimmed history
+    # - Main ran (saw .old)
+    # - Second transcript cleared .old and trimmed again
+    # Final state: .old empty, history = preserve count
+    assert session.artifacts.get("chat_history.sxpb.old", "").strip() == ""
+    msgs = _get_history_messages(session.artifacts["chat_history.sxpb"])
+    assert len(msgs) == 2
+    # The preserved messages should be "old3" + "current" user msg + assistant response
+    # But after cleanup, only last 2 messages remain
+    assert msgs[0] == ("User", "current")
+    assert msgs[1] == ("Assistant", "mock response")

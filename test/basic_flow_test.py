@@ -20,7 +20,8 @@ def test_save_and_inject():
     # Simulated response with a artifact save
     response = "I'll do that for you.\n>mood.sxpb\n(mood sleepy)"
 
-    clean_resp, new_artifacts = parse_assistant_response(response)
+    clean_resp, new_artifacts, malformed = parse_assistant_response(response)
+    assert malformed == []
     assert clean_resp == "I'll do that for you."
     assert new_artifacts == {"mood.sxpb": "(mood sleepy)"}
 
