@@ -660,8 +660,7 @@ async function sendMessage() {
   } catch (e) {
     console.warn("Connection error. Polling will attempt recovery.");
   } finally {
-    rerollBtn.disabled = false;
-    deleteBtn.disabled = false;
+    setThinking(false);
     userInput.focus();
   }
 }
@@ -699,8 +698,7 @@ async function rerollLast() {
   } catch (e) {
     console.warn("Connection error. Polling will attempt recovery.");
   } finally {
-    rerollBtn.disabled = false;
-    deleteBtn.disabled = false;
+    setThinking(false);
     userInput.focus();
   }
 }

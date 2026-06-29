@@ -1,6 +1,6 @@
 from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
-from typing import Optional
+from typing import Any, Optional, cast
 from collections.abc import MutableMapping
 import sxpb
 from sxpb.types import SxpbMany
@@ -582,7 +582,7 @@ def _get_history_messages(history_str):
     """Parse chat_history.sxpb and return list of (role, content) tuples."""
     parsed = sxpb.loads(history_str, precise=True)
     history_list = (
-        parsed.get("history", [])  # type: ignore
+        cast(Any, parsed).get("history", [])
         if isinstance(parsed, MutableMapping)
         else []
     )

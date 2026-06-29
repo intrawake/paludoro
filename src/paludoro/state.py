@@ -1,6 +1,7 @@
-import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
+
+from sxpb_llm.block_parse import CodeBlock, CodeBlockError, parse_code_blocks
 
 
 @dataclass
@@ -66,64 +67,54 @@ class PaludoroSession:
 
 
 def parse_assistant_response(content: str) -> Tuple[str, Dict[str, str], List[str]]:
-    """
-    Extracts virtual artifact saves from the assistant response.
+    """Extracts virtual artifact saves from the assistant response.
+
     Supports:
-    1. ```sxpb >artipath.sxpb ... ```
-    2. >artipath.sxpb (until next empty line or >)
+    1. ```lang >artipath ... ``` (fenced code blocks)
+    2. >artipath (bare lines, content until end of prose or next >/<)
+
+    Fenced > blocks win over bare > patterns for the same filepath.
 
     Returns (clean_response, new_artifacts, malformed_errors).
-    malformed_errors lists any code blocks that use < (read prefix) instead of > (write prefix).
     """
-    new_artifacts = {}
+    new_artifacts: Dict[str, str] = {}
     malformed_errors: List[str] = []
-    clean_response = content
+    response_parts: List[str] = []
 
-    # 0. Detect malformed < prefix blocks before extraction
-    malformed_pattern = r"```[ \t]*\w+[ \t]*<[ \t]*([\w\-\.]+)"
-    for m in re.finditer(malformed_pattern, clean_response):
-        name = m.group(1)
-        malformed_errors.append(
-            f"Wrong prefix on artifact block: used '<' for '{name}' — "
-            "use '>' to write artifacts, '<' means read-only."
-        )
+    for block in parse_code_blocks(content):
+        if block.error is CodeBlockError.NOT_FENCED:
+            # Plain prose — pass through
+            response_parts.append(block.content)
 
-    # 1. Match Markdown Code Blocks first
-    # This matches: optional newlines + ```[lang] [whitespace] >artipath [whitespace]\n[content]\n``` [whitespace] + optional newlines
-    block_pattern = r"(\n*)[ \t]*```[ \t]*\w+[ \t]*>[ \t]*([\w\-\.]+)[ \t]*\r?\n(.*?)\r?\n[ \t]*```[ \t]*(\n*)"
-    matches = list(re.finditer(block_pattern, clean_response, re.DOTALL))
+        elif block.operation == ">":
+            # Artifact — capture, omit from clean_response
+            if block.filepath:
+                new_artifacts[block.filepath] = block.content
 
-    # We process in reverse to not mess up indices when removing
-    for match in reversed(matches):
-        pre_newlines = len(match.group(1))
-        artipath = match.group(2)
-        artifact_content = match.group(3).strip()
-        post_newlines = len(match.group(4))
+        elif block.operation == "<":
+            # Malformed — wrong prefix, but pass through to response
+            name = block.filepath or "?"
+            malformed_errors.append(
+                f"Wrong prefix on artifact block: used '<' for '{name}' — "
+                "use '>' to write artifacts, '<' means read-only."
+            )
+            response_parts.append(_reconstruct_fence(block))
 
-        new_artifacts[artipath] = artifact_content
+        else:
+            # Non-artifact code block — pass through
+            response_parts.append(_reconstruct_fence(block))
 
-        # Replacement: the max number of newlines found around the block
-        replacement = "\n" * max(pre_newlines, post_newlines)
+    clean_response = "".join(response_parts).strip()
+    return clean_response, new_artifacts, malformed_errors
 
-        clean_response = (
-            clean_response[: match.start()]
-            + replacement
-            + clean_response[match.end() :]
-        )
 
-    # 2. Match bare >artipath.sxpb lines
-    # This matches the >artipath and then only subsequent lines that start with ( or ;
-    # We allow optional trailing spaces after the artipath here too.
-    bare_pattern = r"(?:\n|^)\s*>[ \t]*([\w\-\.]+)[ \t]*\n((?:^[ \t]*[\(;].*$\n?)+)"
-    matches = list(re.finditer(bare_pattern, clean_response, re.MULTILINE))
-
-    for match in reversed(matches):
-        artipath = match.group(1)
-        artifact_content = match.group(2).strip()
-        # Only add if not already found in a code block
-        if artipath not in new_artifacts:
-            new_artifacts[artipath] = artifact_content
-        # Remove from response
-        clean_response = clean_response[: match.start()] + clean_response[match.end() :]
-
-    return clean_response.strip(), new_artifacts, malformed_errors
+def _reconstruct_fence(block: CodeBlock) -> str:
+    """Reconstruct a fenced code block from a :class:`CodeBlock`."""
+    fence_info = block.language
+    if block.operation:
+        fence_info += f" {block.operation}"
+    if block.filepath:
+        fence_info += f" {block.filepath}"
+    if block.content:
+        return f"```{fence_info}\n{block.content}\n```"
+    return f"```{fence_info}\n```"

@@ -2,6 +2,7 @@ from collections.abc import MutableMapping, MutableSequence
 import os
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -120,7 +121,7 @@ def test_expose_by_artipath_required():
 
     config = sxpb.loads(config_content, precise=True)
     assert isinstance(config, MutableMapping)
-    agent_dict = config.get("agent_dict", {})  # type: ignore
+    agent_dict = cast(Any, config).get("agent_dict", {})
     assert isinstance(agent_dict, MutableMapping)
     agent_config = agent_dict.get("test_agent", {})
     assert isinstance(agent_config, MutableMapping)

@@ -1,7 +1,7 @@
 from collections.abc import MutableMapping, MutableSequence
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import sxpb
 from paludoro.state import PaludoroSession, parse_assistant_response
@@ -154,7 +154,7 @@ class AgentPipeline:
                     history_data = {"history": SxpbMany([])}
 
                 history_list = (
-                    history_data.get("history", [])  # type: ignore
+                    cast(Any, history_data).get("history", [])
                     if isinstance(history_data, MutableMapping)
                     else []
                 )

@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+from typing import Any, cast
 import uvicorn
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -182,7 +183,9 @@ def parse_chat_history():
     try:
         parsed = sxpb.loads(history_str, precise=True)
         history_list = (
-            parsed.get("history", []) if isinstance(parsed, MutableMapping) else []  # type: ignore
+            cast(Any, parsed).get("history", [])
+            if isinstance(parsed, MutableMapping)
+            else []
         )
         out = []
         for item in history_list:
