@@ -134,3 +134,38 @@ def test_retry_message_lists_invalid_artifact():
     assert (
         "Accepted:" not in retry_msg.split("Failed output artifacts:")[1].split("\n")[0]
     ), "'Accepted:' should not appear before '### Instruction'"
+
+
+def test_extra_closing_paren_stripped():
+    """When an artifact ends with \n)\n), strip the last \n) and retry parse."""
+    config = {
+        "agent_dict": {
+            "test_agent": {
+                "generate_as": {"text": {"model": {"api_url": "mock"}}},
+                "prompt_as": {"remote": "input.sxpb"},
+                "remotes": ["input.sxpb"],
+                "exposes": ["answer.sxpb"],
+            }
+        }
+    }
+    session = PaludoroSession()
+    session.save_artifact("input.sxpb", "(dummy)")
+    pipeline = AgentPipeline(config, session)
+
+    # Nested SxPB with an extra closing paren line — model hallucination.
+    response = 'Here you go!\n\n>answer.sxpb\n(answer\n  "hello world"\n)\n)\n'
+
+    async def run():
+        mock_api = AsyncMock(return_value=response)
+        with patch("paludoro.agent_pipeline.call_api", new=mock_api):
+            changed = await pipeline.run_agent("test_agent")
+
+        # Should have been accepted without a retry.
+        assert changed == ["answer.sxpb"]
+        assert mock_api.call_count == 1
+        stored = session.artifacts["answer.sxpb"]
+        assert "hello world" in stored
+        # Trailing \n)\n) stripped — ends with just one closing paren line.
+        assert stored.endswith("\n)")
+
+    asyncio.run(run())

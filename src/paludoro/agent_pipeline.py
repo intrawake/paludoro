@@ -346,9 +346,19 @@ class AgentPipeline:
                             try:
                                 parsed = sxpb.loads(content, precise=True)
                             except Exception as e:
-                                retry_names.append(a)
-                                artifact_errors[a] = str(e)
-                                continue
+                                # Some models append an extra closing paren line.
+                                if content.endswith("\n)\n)"):
+                                    content = content[:-2]
+                                    try:
+                                        parsed = sxpb.loads(content, precise=True)
+                                    except Exception as e2:
+                                        retry_names.append(a)
+                                        artifact_errors[a] = str(e2)
+                                        continue
+                                else:
+                                    retry_names.append(a)
+                                    artifact_errors[a] = str(e)
+                                    continue
 
                             # Type-check against default artifact type
                             if a in default_sxpb_types:
