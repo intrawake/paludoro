@@ -30,7 +30,7 @@
  (main
   ((generate_as text)
    (model
-    (name openrouter/openrouter/owl-alpha)
+    (name openrouter/nvidia/nemotron-3-super-120b-a12b:free)
    )
   )
   ((prompt_as filepath)
