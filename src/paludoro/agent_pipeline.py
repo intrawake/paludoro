@@ -329,7 +329,6 @@ class AgentPipeline:
                     valid_artifacts = {}
                     accepted_names = []
                     retry_names = []
-                    invalid_names = []
                     artifact_errors = {}
 
                     # Surface malformed artifact blocks as retry-worthy errors
@@ -339,7 +338,6 @@ class AgentPipeline:
 
                     for a, content in new_artifacts.items():
                         if output_artipaths and a not in output_artipaths:
-                            invalid_names.append(a)
                             continue
 
                         if a.endswith(".sxpb"):
@@ -385,7 +383,7 @@ class AgentPipeline:
                                 retry_names.append(a)
                                 artifact_errors[a] = f"Missing required artifact: {a}"
 
-                    if retry_names or invalid_names:
+                    if retry_names:
                         messages.append(
                             {"role": assistant_role, "content": response_raw}
                         )
@@ -397,18 +395,11 @@ class AgentPipeline:
                                 accepted_so_far.add(a)
 
                         # Build structured error report
-                        failed_names = list(retry_names) + list(invalid_names)
+                        failed_names = list(retry_names)
                         lines = ["Failed output artifacts:"]
                         for name in failed_names:
                             lines.append(f"- {name}")
                         lines.append("")
-
-                        # Add errors for invalid names (not in output_artipaths)
-                        for name in invalid_names:
-                            if name not in artifact_errors:
-                                artifact_errors[name] = (
-                                    "Not a valid output artifact — remove this artifact."
-                                )
 
                         instruction_section = build_instruction_section(
                             output_artipaths,
@@ -443,6 +434,8 @@ class AgentPipeline:
 
                     # Save new artifacts (don't overwrite already-accepted ones)
                     for artipath, content in new_artifacts.items():
+                        if output_artipaths and artipath not in output_artipaths:
+                            continue
                         if artipath not in accepted_so_far:
                             if self.session.artifacts.get(artipath) != content:
                                 self.session.save_artifact(artipath, content)
