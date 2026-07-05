@@ -209,7 +209,7 @@ async def poll_updates():
     return {
         "artifacts": res_artifacts,
         "history_version": global_session.history_version,
-        "running_agents": list(global_session.running_agents),
+        "running_agents": global_session.running_agents,
         "pipeline_triggers": global_session.pipeline_triggers,
         "pipeline_finishes": global_session.pipeline_finishes,
     }
@@ -360,6 +360,20 @@ async def get_agents():
 @app.get("/api/llm-requests")
 async def get_llm_requests():
     return {"requests": get_llm_request_log()}
+
+
+@app.post("/api/agents/{agent_name}/stop")
+async def stop_agent(agent_name: str):
+    if agent_name not in global_session.running_agents:
+        return JSONResponse(
+            status_code=404, content={"error": f"Agent {agent_name} is not running"}
+        )
+    # Kill in-flight HTTP requests by closing the agent's httpx client
+    client = global_session.agent_http_clients.pop(agent_name, None)
+    if client:
+        await client.aclose()
+    global_session.request_cancel(agent_name)
+    return {"status": "ok"}
 
 
 @app.post("/api/agents/{agent_name}/run")

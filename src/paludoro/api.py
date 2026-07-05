@@ -1,6 +1,8 @@
 import logging
 import time
 from collections import deque
+
+import httpx2 as httpx
 from sxpb_llm import async_call_api as _sxpb_async_call_api
 from sxpb_llm import async_call_image_api as _sxpb_async_call_image_api
 
@@ -79,6 +81,7 @@ async def call_api(
     api_key=None,
     record_content=False,
     agent_name="unknown",
+    httpx_client: "httpx.AsyncClient | None" = None,
 ):
     """Thin wrapper around sxpb_llm.async_call_api.
 
@@ -116,6 +119,7 @@ async def call_api(
             api_url=api_url,
             api_key=api_key,
             return_full=True,
+            httpx_client=httpx_client,
         )
 
         if content is None:
@@ -155,6 +159,7 @@ async def call_image_api(
     api_key=None,
     record_content=False,
     agent_name="unknown",
+    httpx_client: "httpx.AsyncClient | None" = None,
 ):
     """Thin wrapper around sxpb_llm.async_call_image_api.
 
@@ -191,6 +196,7 @@ async def call_image_api(
             prompt,
             api_url=api_url,
             api_key=api_key,
+            httpx_client=httpx_client,
         )
 
         if b64 is None:

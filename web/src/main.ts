@@ -22,8 +22,10 @@ let currentArtifactVersions: Record<string, [string, number][]> = {};
 let currentViewedArtifact: string | null = null;
 let currentArtifactVersionIndex: number = 0;
 let userRoleName = "User";
-let runningAgents: string[] = [];
+let runningAgents: Record<string, number> = {};
 let availableAgents: string[] = [];
+let currentViewedAgent: string | null = null;
+let agentElapsedInterval: ReturnType<typeof setInterval> | null = null;
 
 async function fetchUserRole() {
   try {
@@ -123,11 +125,76 @@ async function runAgent(agentName: string) {
   } catch (e) {
     console.error("Failed to run agent:", e);
   } finally {
-    // Pipeline is background, so we rely on polling to unset thinking if history changed.
-    // But since this might NOT change history, let's just unset it after a brief delay
-    // or let the user click again.
     setTimeout(() => setThinking(false), 1000);
   }
+}
+
+async function cancelAgent(agentName: string) {
+  try {
+    const res = await fetch(`/api/agents/${agentName}/stop`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      alert(data.error || "Failed to stop agent");
+    }
+  } catch (e) {
+    console.error("Failed to stop agent:", e);
+  }
+}
+
+function formatElapsed(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function openAgent(name: string) {
+  if (window.innerWidth <= 768) {
+    toggleSidebar();
+  }
+
+  chatContainer.style.display = "none";
+  mainArtifactView.style.display = "none";
+  mainAgentView.style.display = "flex";
+  backBtn.style.display = "inline-block";
+
+  currentViewedAgent = name;
+  renderAgentView(name);
+
+  // Live-update elapsed time if running
+  if (agentElapsedInterval) clearInterval(agentElapsedInterval);
+  agentElapsedInterval = setInterval(() => {
+    if (currentViewedAgent) renderAgentView(currentViewedAgent);
+  }, 1000);
+}
+
+function renderAgentView(name: string) {
+  const isRunning = name in runningAgents;
+  const startedAt = isRunning ? runningAgents[name] : null;
+
+  let statusHtml = "";
+  if (isRunning && startedAt) {
+    const elapsed = Date.now() / 1000 - startedAt;
+    statusHtml = `<span style="color: var(--accent);">⚙️ Running — ${formatElapsed(elapsed)}</span>`;
+  } else {
+    statusHtml = '<span style="color: #888;">Idle</span>';
+  }
+
+  agentContentArea.innerHTML = `
+    <div style="font-size: 1.5rem; font-weight: bold; color: var(--accent);">${name}</div>
+    <div style="font-size: 1.1rem;">${statusHtml}</div>
+  `;
+
+  agentStatus.textContent = isRunning
+    ? `Running — ${formatElapsed(Date.now() / 1000 - startedAt!)}`
+    : "Idle";
+
+  agentRunBtn.style.display = isRunning ? "none" : "inline-block";
+  agentCancelBtn.style.display = isRunning ? "inline-block" : "none";
+
+  agentRunBtn.onclick = () => runAgent(name);
+  agentCancelBtn.onclick = () => cancelAgent(name);
 }
 
 async function loadHistory() {
@@ -187,6 +254,28 @@ const artifactVersionDisplay = document.getElementById(
   "artifact-version-display",
 ) as HTMLSpanElement;
 
+// Agent detail view elements
+const mainAgentView = document.getElementById(
+  "main-agent-view",
+) as HTMLDivElement;
+const agentContentArea = document.getElementById(
+  "agent-content-area",
+) as HTMLDivElement;
+const agentMenuBtn = document.getElementById(
+  "agent-menu-btn",
+) as HTMLButtonElement;
+const agentStatus = document.getElementById("agent-status") as HTMLSpanElement;
+const agentRunBtn = document.getElementById(
+  "agent-run-btn",
+) as HTMLButtonElement;
+const agentCancelBtn = document.getElementById(
+  "agent-cancel-btn",
+) as HTMLButtonElement;
+
+agentMenuBtn.onclick = () => {
+  toggleSidebar();
+};
+
 artifactMenuBtn.onclick = () => {
   toggleSidebar();
 };
@@ -195,7 +284,13 @@ backBtn.onclick = () => {
   isEditingArtifact = false;
   chatContainer.style.display = "flex";
   mainArtifactView.style.display = "none";
+  mainAgentView.style.display = "none";
   backBtn.style.display = "none";
+  currentViewedAgent = null;
+  if (agentElapsedInterval) {
+    clearInterval(agentElapsedInterval);
+    agentElapsedInterval = null;
+  }
 };
 
 const toggleSidebarBtn = document.getElementById(
@@ -491,13 +586,14 @@ function refreshAgentsUI(agents: string[]) {
   availableAgents = agents;
   agentList.innerHTML = "";
   agents.forEach((name) => {
-    const isRunning = runningAgents.includes(name);
+    const isRunning = name in runningAgents;
 
     const item = document.createElement("div");
     item.className = "artifact-item"; // Reuse same style
     item.style.display = "flex";
     item.style.justifyContent = "space-between";
     item.style.alignItems = "center";
+    item.style.cursor = "pointer";
     if (isRunning) {
       item.style.color = "var(--accent)";
     }
@@ -506,16 +602,7 @@ function refreshAgentsUI(agents: string[]) {
     nameSpan.textContent = isRunning ? `⚙️ ${name}` : name;
     item.appendChild(nameSpan);
 
-    const runBtn = document.createElement("button");
-    runBtn.textContent = isRunning ? "..." : "Run";
-    runBtn.disabled = isRunning || isThinking;
-    runBtn.style.padding = "2px 8px";
-    runBtn.style.fontSize = "0.8em";
-    runBtn.onclick = (e) => {
-      e.stopPropagation();
-      runAgent(name);
-    };
-    item.appendChild(runBtn);
+    item.onclick = () => openAgent(name);
 
     agentList.appendChild(item);
   });
@@ -585,7 +672,14 @@ async function openArtifact(name: string) {
 
   chatContainer.style.display = "none";
   mainArtifactView.style.display = "flex";
+  mainAgentView.style.display = "none";
   backBtn.style.display = "inline-block";
+
+  currentViewedAgent = null;
+  if (agentElapsedInterval) {
+    clearInterval(agentElapsedInterval);
+    agentElapsedInterval = null;
+  }
 
   isEditingArtifact = false;
   currentViewedArtifact = name;
@@ -818,10 +912,14 @@ setInterval(async () => {
 
       // --- Running agents ---
       if (data.running_agents) {
-        const newRunning = data.running_agents;
+        const newRunning: Record<string, number> = data.running_agents;
         if (JSON.stringify(newRunning) !== JSON.stringify(runningAgents)) {
           runningAgents = newRunning;
           refreshAgentsUI(availableAgents);
+          // Refresh agent detail view if open
+          if (currentViewedAgent) {
+            renderAgentView(currentViewedAgent);
+          }
         }
       }
     }

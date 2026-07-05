@@ -11,7 +11,12 @@ class PaludoroSession:
     # artipath -> List[(content, turn)]
     artifact_versions: Dict[str, List[Tuple[str, int]]] = field(default_factory=dict)
     dirty_artifacts: set = field(default_factory=set)
-    running_agents: set = field(default_factory=set)
+    # agent_name -> started_at (epoch seconds)
+    running_agents: Dict[str, float] = field(default_factory=dict)
+    # Set of agent names that have been requested to cancel
+    agent_cancel_signals: set = field(default_factory=set)
+    # Per-agent httpx clients so cancel can kill in-flight requests from outside
+    agent_http_clients: dict = field(default_factory=dict)
     pipeline_triggers: int = 0
     pipeline_finishes: int = 0
     history_version: int = 0
@@ -47,6 +52,15 @@ class PaludoroSession:
         for k, v in self.default_artifacts.items():
             self.artifact_versions[k] = [(v, 0)]
         self.dirty_artifacts.update(self.artifacts.keys())
+
+    def request_cancel(self, agent_name: str):
+        self.agent_cancel_signals.add(agent_name)
+
+    def is_cancelled(self, agent_name: str) -> bool:
+        return agent_name in self.agent_cancel_signals
+
+    def clear_cancel(self, agent_name: str):
+        self.agent_cancel_signals.discard(agent_name)
 
     def to_dict(self) -> dict:
         return {

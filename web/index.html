@@ -402,6 +402,59 @@
           </div>
         </div>
       </div>
+      <div
+        id="main-agent-view"
+        style="
+          display: none;
+          flex-direction: column;
+          flex-grow: 1;
+          overflow: hidden;
+          background: #000;
+        "
+      >
+        <div
+          id="agent-content-area"
+          style="
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 1.5rem;
+          "
+        ></div>
+        <div
+          id="agent-footer"
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem;
+            background: #222;
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+            gap: 0.5rem;
+          "
+        >
+          <div style="display: flex; gap: 0.5rem; align-items: center">
+            <button id="agent-menu-btn" title="Toggle Agents Panel">📁</button>
+            <span
+              id="agent-status"
+              style="font-size: 0.9em; color: #aaa"
+            ></span>
+          </div>
+          <div style="display: flex; gap: 0.5rem; align-items: center">
+            <button id="agent-run-btn" class="primary" style="display: none">
+              ▶ Run
+            </button>
+            <button id="agent-cancel-btn" class="danger" style="display: none">
+              ⏹ Stop
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
     <!-- LLM Request Log Modal -->
     <div

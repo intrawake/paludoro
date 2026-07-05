@@ -1,8 +1,10 @@
 from collections.abc import MutableMapping, MutableSequence
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional, cast
 
+import httpx2 as httpx
 import sxpb
 from paludoro.state import PaludoroSession, parse_assistant_response
 from paludoro.api import call_api, call_image_api
@@ -59,7 +61,15 @@ class AgentPipeline:
         system_prompt_as = agent_config.get("system_prompt_as", {})
 
         logger.info(f"[{agent_name}] Running agent... (triggered by: {triggered_by})")
-        self.session.running_agents.add(agent_name)
+        self.session.running_agents[agent_name] = time.time()
+        self.session.clear_cancel(agent_name)
+
+        # Shared httpx client so cancel can kill in-flight requests
+        agent_client = httpx.AsyncClient()
+        self.session.agent_http_clients[agent_name] = agent_client
+
+        async def check_cancel() -> bool:
+            return self.session.is_cancelled(agent_name)
 
         try:
             # 1. Build prompt
@@ -168,6 +178,12 @@ class AgentPipeline:
                         history_list = SxpbMany([])
 
                 changed = False
+
+                if await check_cancel():
+                    logger.info(
+                        f"[{agent_name}] Cancelled during transcript processing."
+                    )
+                    return []
 
                 def _process_details(remote_name, details):
                     nonlocal changed
@@ -310,6 +326,10 @@ class AgentPipeline:
 
                 MAX_ATTEMPTS = 3
                 for attempt in range(MAX_ATTEMPTS):
+                    if await check_cancel():
+                        logger.info(f"[{agent_name}] Cancelled during text generation.")
+                        return sorted(accepted_so_far) if accepted_so_far else []
+
                     response_raw = await call_api(
                         model_name,
                         messages,
@@ -317,6 +337,7 @@ class AgentPipeline:
                         api_key=api_key,
                         record_content=record_content,
                         agent_name=agent_name,
+                        httpx_client=agent_client,
                     )
                     if not response_raw:
                         logger.error(f"[{agent_name}] Failed to get response.")
@@ -467,6 +488,10 @@ class AgentPipeline:
 
                 logger.info(f"[{agent_name}] Image generation triggered.")
 
+                if await check_cancel():
+                    logger.info(f"[{agent_name}] Cancelled before image generation.")
+                    return []
+
                 image_data = await call_image_api(
                     model_name,
                     prompt_text,
@@ -474,6 +499,7 @@ class AgentPipeline:
                     api_key=api_key,
                     record_content=record_content,
                     agent_name=agent_name,
+                    httpx_client=agent_client,
                 )
                 if image_data:
                     self.session.save_artifact(expose_artifact, image_data)
@@ -483,8 +509,11 @@ class AgentPipeline:
 
             return []
         finally:
-            if agent_name in self.session.running_agents:
-                self.session.running_agents.remove(agent_name)
+            client = self.session.agent_http_clients.pop(agent_name, None)
+            if client:
+                await client.aclose()
+            self.session.running_agents.pop(agent_name, None)
+            self.session.clear_cancel(agent_name)
 
     async def on_artifacts_changed(self, changed_artipaths: List[str]):
         # BFS through triggers
