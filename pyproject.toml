@@ -9,8 +9,8 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "sxpb @ git+https://github.com/sxproto/sxpb-py@04fbc53342cb7c7dd75166be955253711966f5e2",
-    "sxpb-llm[async] @ git+https://github.com/intrawake/sxpb-llm.git@2ae840fc6d9856ab235ce91a1b632a5d30acabf8",
+    "sxpb @ git+https://github.com/sxproto/sxpb-py@04c9bbe867eaacf5bda92f4ee777e9f8fcb2992a",
+    "sxpb-llm[async] @ git+https://github.com/intrawake/sxpb-llm.git@276cee24a351673ca33df23c70b91e53c31af796",
     "fastapi>=0.136.1",
     "uvicorn>=0.46.0",
     "opentelemetry-sdk",
