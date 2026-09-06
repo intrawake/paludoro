@@ -211,6 +211,44 @@ test.describe("Artifact Edit Mode", () => {
     );
   });
 
+  test("Invalid SxPB shows the parser error and keeps the draft", async ({
+    page,
+  }) => {
+    await loadArtifactFixture(page);
+    await page.route("**/api/artifacts/test.sxpb", async (route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({
+          status: 400,
+          json: { error: "Invalid SxPB: Expected RPAREN, found EOF" },
+        });
+      } else {
+        await route.fallback();
+      }
+    });
+
+    await page.locator("#edit-artifact-btn").click();
+    await page.locator("#artifact-editor").fill("(value unfinished");
+    const dialogMessage = new Promise<string>((resolve) => {
+      page.once("dialog", async (dialog) => {
+        resolve(dialog.message());
+        await dialog.accept();
+      });
+    });
+    await page.locator("#save-artifact-btn").click();
+
+    expect(await dialogMessage).toBe(
+      "Invalid SxPB: Expected RPAREN, found EOF",
+    );
+    await expect(page.locator("#artifact-editor")).toHaveValue(
+      "(value unfinished",
+    );
+    await expect(page.locator("#save-artifact-btn")).toBeVisible();
+    await expect(page.locator("#artifact-version-display")).toHaveText(
+      "v2 / v2",
+    );
+    expect(mockArtifactVersions["test.sxpb"]).toHaveLength(2);
+  });
+
   test("Delete button hidden when only 1 version", async ({ page }) => {
     resetMockState();
     mockArtifacts["single.sxpb"] = "(name Single)";

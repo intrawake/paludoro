@@ -21,7 +21,7 @@ import sxpb
 
 from paludoro.agent_pipeline import AgentPipeline
 from paludoro.api import get_llm_request_log, set_llm_log_maxlen
-from paludoro.state import PaludoroSession
+from paludoro.state import ChatWork, PaludoroSession
 from paludoro.config import load_config, get_resource_path
 from paludoro import otel_setup
 
@@ -106,6 +106,38 @@ def history_version_hook(artipath: str, content: str) -> str:
 global_session.on_save_hooks.append(history_version_hook)
 
 
+def persist_state():
+    """Atomically persist the complete session state."""
+    tmp_path = ARTIFACTS_FILE.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(global_session.to_dict()))
+    os.replace(tmp_path, ARTIFACTS_FILE)
+
+
+def cleanup_unreferenced_images(candidate_contents):
+    referenced = set(global_session.artifacts.values())
+    for artipath in list(global_session.artifact_versions):
+        referenced.update(
+            revision.content for revision in global_session.revisions_for(artipath)
+        )
+
+    for content in set(candidate_contents):
+        if not isinstance(content, str) or not content.startswith("/images/"):
+            continue
+        image_name = content.removeprefix("/images/")
+        if not image_name or Path(image_name).name != image_name:
+            continue
+        if content not in referenced:
+            (IMAGES_DIR / image_name).unlink(missing_ok=True)
+
+
+def rollback_turn(turn_id: int):
+    affected, removed_contents = global_session.rollback_turn(turn_id)
+    if CHAT_HISTORY_ARTIFACT in affected:
+        global_session.history_version += 1
+    cleanup_unreferenced_images(removed_contents)
+    return affected
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -122,12 +154,12 @@ async def lifespan(app: FastAPI):
                     if new_content != content:
                         global_session.artifacts[artipath] = new_content
 
-                for artipath, versions in global_session.artifact_versions.items():
-                    new_versions = []
-                    for content, turn in versions:
-                        new_content = image_save_hook(artipath, content)
-                        new_versions.append((new_content, turn))
-                    global_session.artifact_versions[artipath] = new_versions
+                for artipath in list(global_session.artifact_versions):
+                    for revision in global_session.revisions_for(artipath):
+                        revision.content = image_save_hook(artipath, revision.content)
+                    revisions = global_session.revisions_for(artipath)
+                    if revisions:
+                        global_session.artifacts[artipath] = revisions[-1].content
             else:
                 # Old format (flat dict of artifacts)
                 for k, v in stored.items():
@@ -135,8 +167,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Failed to load artifacts.json: {e}")
     else:
-        for k, v in default_artifacts.items():
-            global_session.save_artifact(k, v)
+        global_session.reset()
 
     try:
         yield
@@ -146,7 +177,7 @@ async def lifespan(app: FastAPI):
         # Shutdown
         print("\nPaludoro (FastAPI) shutting down...")
         try:
-            ARTIFACTS_FILE.write_text(json.dumps(global_session.to_dict()))
+            persist_state()
         except Exception:
             pass
 
@@ -212,6 +243,12 @@ async def poll_updates():
         "running_agents": global_session.running_agents,
         "pipeline_triggers": global_session.pipeline_triggers,
         "pipeline_finishes": global_session.pipeline_finishes,
+        "chat_busy": global_session.chat_busy,
+        "queued_messages": [
+            {"turn_id": work.turn_id, "message": work.message}
+            for work in global_session.pending_chat_work
+            if work.message is not None
+        ],
     }
 
 
@@ -238,8 +275,29 @@ class ArtifactUpdateRequest(BaseModel):
 
 @app.post("/api/history")
 async def post_history(req: ChatRequest):
+    if global_session.chat_busy:
+        return JSONResponse(
+            status_code=409, content={"error": "A chat turn is still running"}
+        )
+
     if not req.history:
+        removed_contents = list(global_session.artifacts.values())
         global_session.reset()
+        global_session.history_version += 1
+        cleanup_unreferenced_images(removed_contents)
+        try:
+            persist_state()
+        except Exception as e:
+            print(f"Failed to save artifacts.json: {e}")
+        return {"status": "ok"}
+
+    # This endpoint remains for one-time localStorage migration. Once tracked
+    # turns exist, history changes must use the causal chat APIs below.
+    if global_session.chat_turns:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Tracked chat history cannot be replaced directly"},
+        )
 
     from sxpb.types import SxpbMany
 
@@ -249,15 +307,52 @@ async def post_history(req: ChatRequest):
 
     new_history_data = {"history": history_list}
     new_history_str = sxpb.dumps(new_history_data)
-
-    global_session.save_artifact(CHAT_HISTORY_ARTIFACT, new_history_str)
+    global_session.save_artifact(
+        CHAT_HISTORY_ARTIFACT, new_history_str, source="legacy"
+    )
 
     try:
-        ARTIFACTS_FILE.write_text(json.dumps(global_session.to_dict()))
+        persist_state()
     except Exception as e:
         print(f"Failed to save artifacts.json: {e}")
 
     return {"status": "ok"}
+
+
+@app.delete("/api/history/last-turn")
+async def delete_last_turn():
+    turn = global_session.last_chat_turn()
+    if turn is None:
+        if parse_chat_history():
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "This turn predates causal tracking and cannot be safely rolled back"
+                },
+            )
+        return JSONResponse(
+            status_code=404, content={"error": "No chat turn to delete"}
+        )
+    if global_session.chat_busy:
+        return JSONResponse(
+            status_code=409, content={"error": "The last chat turn is still running"}
+        )
+
+    affected = rollback_turn(turn.id)
+    global_session.chat_turns.pop()
+    try:
+        persist_state()
+    except Exception as e:
+        print(f"Failed to save artifacts.json: {e}")
+        return JSONResponse(status_code=500, content={"error": "Failed to save state"})
+
+    return {
+        "status": "ok",
+        "deleted_turn_id": turn.id,
+        "history": parse_chat_history(),
+        "affected_artifacts": affected,
+        **artifact_response(),
+    }
 
 
 def get_user_role_name():
@@ -294,20 +389,27 @@ async def health():
     }
 
 
+def artifact_response():
+    version_counts = {
+        artipath: len(global_session.visible_versions(artipath))
+        for artipath in global_session.artifact_versions
+    }
+    return {
+        "artifacts": global_session.artifacts,
+        "version_counts": version_counts,
+    }
+
+
 @app.get("/api/artifacts")
 async def list_artifacts():
-    """Return current artifact content and version counts."""
-    version_counts = {}
-    for artipath, versions in global_session.artifact_versions.items():
-        version_counts[artipath] = len(versions)
-
-    return {"artifacts": global_session.artifacts, "version_counts": version_counts}
+    """Return current artifact content and visible version counts."""
+    return artifact_response()
 
 
 @app.get("/api/artifacts/{artipath:path}/versions")
 async def get_artifact_versions(artipath: str):
     """Return full version history for a single artifact (lazy load)."""
-    versions = global_session.artifact_versions.get(artipath, [])
+    versions = global_session.visible_versions(artipath)
     if not versions and artipath not in global_session.artifacts:
         return JSONResponse(status_code=404, content={"error": "Artifact not found"})
     return {"artipath": artipath, "versions": versions}
@@ -315,10 +417,17 @@ async def get_artifact_versions(artipath: str):
 
 @app.put("/api/artifacts/{artipath:path}")
 async def update_artifact(artipath: str, req: ArtifactUpdateRequest):
-    """Save edited content as a new version of the artifact."""
-    global_session.save_artifact(artipath, req.content)
+    """Validate edited content before saving a new artifact version."""
+    if artipath.endswith(".sxpb"):
+        try:
+            sxpb.loads(req.content, precise=True)
+        except Exception as e:
+            return JSONResponse(
+                status_code=400, content={"error": f"Invalid SxPB: {e}"}
+            )
+    global_session.save_artifact(artipath, req.content, source="manual")
     try:
-        ARTIFACTS_FILE.write_text(json.dumps(global_session.to_dict()))
+        persist_state()
     except Exception as e:
         print(f"Failed to save artifacts.json: {e}")
     return {"status": "ok"}
@@ -326,29 +435,28 @@ async def update_artifact(artipath: str, req: ArtifactUpdateRequest):
 
 @app.delete("/api/artifacts/{artipath:path}/versions/{version_index:int}")
 async def delete_artifact_version(artipath: str, version_index: int):
-    """Delete a specific version of an artifact. Cannot delete the last remaining version."""
-    versions = global_session.artifact_versions.get(artipath, [])
-    if not versions or version_index < 0 or version_index >= len(versions):
-        return JSONResponse(status_code=404, content={"error": "Version not found"})
-    if len(versions) <= 1:
-        return JSONResponse(
-            status_code=400, content={"error": "Cannot delete the last version"}
-        )
-
-    versions.pop(version_index)
-
-    # Update current artifact content to the latest remaining version
-    global_session.artifacts[artipath] = versions[-1][0]
-    global_session.dirty_artifacts.add(artipath)
-
+    """Delete one visible version without cascading to its chat turn."""
     try:
-        ARTIFACTS_FILE.write_text(json.dumps(global_session.to_dict()))
+        removed_contents = global_session.delete_visible_version(
+            artipath, version_index
+        )
+    except IndexError:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+    cleanup_unreferenced_images(removed_contents)
+    try:
+        persist_state()
     except Exception as e:
         print(f"Failed to save artifacts.json: {e}")
 
     return {
         "status": "ok",
-        "artifact_versions": global_session.artifact_versions,
+        "artifact_versions": {
+            name: global_session.visible_versions(name)
+            for name in global_session.artifact_versions
+        },
     }
 
 
@@ -393,7 +501,7 @@ async def run_specific_agent(agent_name: str, background_tasks: BackgroundTasks)
             # We don't have a specific 'triggered_by' for on-demand runs
             await pipeline.run_agent(agent_name)
             try:
-                ARTIFACTS_FILE.write_text(json.dumps(global_session.to_dict()))
+                persist_state()
             except Exception as e:
                 print(f"Failed to save artifacts.json: {e}")
         except Exception as e:
@@ -405,81 +513,122 @@ async def run_specific_agent(agent_name: str, background_tasks: BackgroundTasks)
     return {"status": "ok", "trigger_gen": trigger_gen}
 
 
-@app.post("/api/chat")
-async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
-    changed = []
-    if req.message:
-        global_session.save_artifact("/dev/stdin", req.message)
-        changed.append("/dev/stdin")
-    elif req.reroll:
-        from sxpb.types import SxpbMany
-
-        history_str = global_session.artifacts.get(CHAT_HISTORY_ARTIFACT, "")
-        if history_str:
+async def run_chat_queue():
+    session = global_session
+    try:
+        while session.pending_chat_work:
+            work = session.pending_chat_work.pop(0)
             try:
-                from typing import cast
-
-                parsed = sxpb.loads(history_str, precise=True)
-                history_list: MutableSequence = []
-                if isinstance(parsed, MutableMapping):
-                    # Cast to dict for simpler Ty interaction
-                    parsed_dict = cast(dict, parsed)
-                    history_list_raw = parsed_dict.get("history", [])
-                    if isinstance(history_list_raw, MutableSequence):
-                        history_list = history_list_raw
-
-                # Robust check for SxpbMany or list
-                is_sxpb_many = (
-                    hasattr(history_list, "__class__")
-                    and history_list.__class__.__name__ == "SxpbMany"
-                )
-
-                if history_list and (
-                    isinstance(history_list, (list, MutableSequence)) or is_sxpb_many
-                ):
-                    # Convert to list for easy manipulation if it's SxpbMany
-                    if is_sxpb_many:
-                        history_list = list(history_list)
-
-                    user_role = get_user_role_name().lower()
-                    if (
-                        history_list
-                        and list(history_list[-1].keys())[0].lower() != user_role
-                    ):
-                        history_list.pop()
-                        # Wrap back in SxpbMany for the dump hint (())
-                        new_history_data = {"history": SxpbMany(history_list)}
-                        new_history_str = sxpb.dumps(new_history_data)
-                        global_session.save_artifact(
-                            CHAT_HISTORY_ARTIFACT, new_history_str
-                        )
-
-                    # Always trigger pipeline — even if nothing was popped,
-                    # the user wants a (re)generation (e.g. retry after failure)
-                    changed.append(CHAT_HISTORY_ARTIFACT)
-            except Exception as e:
-                print(f"Reroll pop failed: {e}")
-    if changed:
-        global_session.pipeline_triggers += 1
-        trigger_gen = global_session.pipeline_triggers
-
-        async def run_pipeline_bg(changed_arts):
-            try:
-                pipeline = AgentPipeline(config, global_session)
-
-                await pipeline.on_artifacts_changed(changed_arts)
-
-                try:
-                    ARTIFACTS_FILE.write_text(json.dumps(global_session.to_dict()))
-                except Exception as e:
-                    print(f"Failed to save artifacts.json: {e}")
+                if work.message is not None:
+                    session.save_artifact(
+                        "/dev/stdin",
+                        work.message,
+                        turn=work.turn_id,
+                        create_version=False,
+                        source="chat-input",
+                    )
+                pipeline = AgentPipeline(config, session, turn_id=work.turn_id)
+                await pipeline.on_artifacts_changed(work.changed_artipaths)
             except Exception as e:
                 print(f"Agent pipeline failed: {e}")
             finally:
-                global_session.pipeline_finishes += 1
+                session.active_turn_ids.discard(work.turn_id)
+                session.pipeline_finishes += 1
+                try:
+                    persist_state()
+                except Exception as e:
+                    print(f"Failed to save artifacts.json: {e}")
+    finally:
+        # Cancellation/shutdown must not leave a runtime busy flag behind.
+        for work in session.pending_chat_work:
+            session.active_turn_ids.discard(work.turn_id)
+            session.pipeline_finishes += 1
+        session.pending_chat_work.clear()
+        session.chat_worker_running = False
 
-        background_tasks.add_task(run_pipeline_bg, changed)
-        return {"status": "ok", "trigger_gen": trigger_gen}
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
+    changed = []
+    turn_id = None
+    input_message = req.message
+
+    if req.message:
+        turn = global_session.begin_chat_turn(req.message)
+        turn_id = turn.id
+        changed.append("/dev/stdin")
+
+    elif req.reroll:
+        if global_session.chat_busy:
+            return JSONResponse(
+                status_code=409, content={"error": "A chat turn is still running"}
+            )
+
+        turn = global_session.last_chat_turn()
+        if turn is not None:
+            # Remove every product of the old attempt, then replay the original
+            # user message through the same turn identity.
+            rollback_turn(turn.id)
+            turn_id = turn.id
+            input_message = turn.user_message
+            changed.append("/dev/stdin")
+        else:
+            # Compatibility for histories created before turn provenance existed.
+            from sxpb.types import SxpbMany
+
+            history_str = global_session.artifacts.get(CHAT_HISTORY_ARTIFACT, "")
+            if history_str:
+                try:
+                    parsed = sxpb.loads(history_str, precise=True)
+                    history_list: MutableSequence = []
+                    if isinstance(parsed, MutableMapping):
+                        history_list_raw = cast(dict, parsed).get("history", [])
+                        if isinstance(history_list_raw, MutableSequence):
+                            history_list = history_list_raw
+
+                    if history_list:
+                        history_list = list(history_list)
+                        user_role = get_user_role_name().lower()
+                        if list(history_list[-1].keys())[0].lower() != user_role:
+                            history_list.pop()
+                            new_history_str = sxpb.dumps(
+                                {"history": SxpbMany(history_list)}
+                            )
+                            global_session.save_artifact(
+                                CHAT_HISTORY_ARTIFACT,
+                                new_history_str,
+                                source="legacy",
+                            )
+                        changed.append(CHAT_HISTORY_ARTIFACT)
+                except Exception as e:
+                    print(f"Reroll pop failed: {e}")
+
+    if changed:
+        try:
+            persist_state()
+        except Exception as e:
+            if req.message:
+                global_session.chat_turns.pop()
+            print(f"Failed to save artifacts.json: {e}")
+            return JSONResponse(
+                status_code=500, content={"error": "Failed to save state"}
+            )
+
+        global_session.pipeline_triggers += 1
+        trigger_gen = global_session.pipeline_triggers
+        if turn_id is not None:
+            global_session.active_turn_ids.add(turn_id)
+        global_session.pending_chat_work.append(
+            ChatWork(changed, turn_id, input_message)
+        )
+        if not global_session.chat_worker_running:
+            global_session.chat_worker_running = True
+            background_tasks.add_task(run_chat_queue)
+        return {
+            "status": "ok",
+            "trigger_gen": trigger_gen,
+            "turn_id": turn_id,
+        }
 
     return {"status": "ok"}
 

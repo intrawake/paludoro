@@ -10,7 +10,8 @@ const refreshBtn = document.getElementById("refresh-btn") as HTMLButtonElement;
 const artifactList = document.getElementById("artifact-list") as HTMLDivElement;
 const agentList = document.getElementById("agent-list") as HTMLDivElement;
 let isThinking = false;
-let clientTriggerGen: number | null = null;
+let isSubmitting = false;
+const chatQueue = document.getElementById("chat-queue") as HTMLDivElement;
 let lastHistoryVersion = -1;
 let isEditingArtifact = false;
 let conversationHistory: {
@@ -18,7 +19,7 @@ let conversationHistory: {
   content: string;
   raw_content?: string;
 }[] = [];
-let currentArtifactVersions: Record<string, [string, number][]> = {};
+let currentArtifactVersions: Record<string, [string, number | null][]> = {};
 let currentViewedArtifact: string | null = null;
 let currentArtifactVersionIndex: number = 0;
 let userRoleName = "User";
@@ -43,12 +44,15 @@ async function fetchUserRole() {
 
 fetchUserRole();
 
-function setThinking(val: boolean, triggerGen?: number) {
+function setThinking(val: boolean) {
   isThinking = val;
-  if (val) clientTriggerGen = triggerGen ?? null;
+  rerollBtn.disabled = val || conversationHistory.length === 0;
+  deleteBtn.disabled = val || conversationHistory.length === 0;
+}
+
+function setSubmitting(val: boolean) {
+  isSubmitting = val;
   sendBtn.disabled = val;
-  rerollBtn.disabled = val;
-  deleteBtn.disabled = val;
   if (val) {
     sendBtn.textContent = "...";
   } else {
@@ -82,14 +86,14 @@ async function rebuildArtifacts() {
 
 async function fetchArtifactVersions(
   artipath: string,
-): Promise<[string, number][]> {
+): Promise<[string, number | null][]> {
   try {
     const res = await fetch(
       `/api/artifacts/${encodeURIComponent(artipath)}/versions`,
     );
     if (res.ok) {
       const data = await res.json();
-      const versions: [string, number][] = data.versions || [];
+      const versions: [string, number | null][] = data.versions || [];
       currentArtifactVersions[artipath] = versions;
       return versions;
     }
@@ -483,7 +487,11 @@ function renderCurrentArtifactVersion() {
       : "none";
 
   artifactTimestamp.textContent =
-    turn === 0 ? "Default" : `Generated at Turn ${turn}`;
+    turn === 0
+      ? "Default"
+      : turn === null
+        ? "Manual or legacy"
+        : `Generated at Turn ${turn}`;
   artifactVersionDisplay.textContent = `v${currentArtifactVersionIndex + 1} / v${versions.length}`;
 
   artifactPrevBtn.disabled = currentArtifactVersionIndex === 0;
@@ -501,7 +509,6 @@ saveArtifactBtn.onclick = async () => {
   if (!textarea || !currentViewedArtifact) return;
 
   const newContent = textarea.value;
-  isEditingArtifact = false;
 
   try {
     const res = await fetch(
@@ -513,6 +520,7 @@ saveArtifactBtn.onclick = async () => {
       },
     );
     if (res.ok) {
+      isEditingArtifact = false;
       await rebuildArtifacts();
       // Jump to the newly saved version (last)
       const vers = currentArtifactVersions[currentViewedArtifact];
@@ -521,8 +529,8 @@ saveArtifactBtn.onclick = async () => {
         renderCurrentArtifactVersion();
       }
     } else {
-      isEditingArtifact = true;
-      alert("Failed to save artifact");
+      const data = await res.json();
+      alert(data.error || "Failed to save artifact");
     }
   } catch (e) {
     isEditingArtifact = true;
@@ -721,19 +729,22 @@ function renderHistory() {
 
 async function sendMessage() {
   const text = userInput.value.trim();
-  if (!text || isThinking) return;
+  if (!text || isSubmitting) return;
 
-  userInput.value = "";
-  userInput.focus();
-  conversationHistory.push({
+  const wasThinking = isThinking;
+  const optimisticMessage = {
     role: userRoleName,
     content: text,
     raw_content: text,
-  });
-  // Do NOT saveHistory() here. The backend transcript agent will append /dev/stdin
-  // to chat_history.sxpb. If we saveHistory() here, it duplicates the User message.
+  };
+  userInput.value = "";
+  userInput.focus();
+  conversationHistory.push(optimisticMessage);
+  // The transcript agent saves history. Saving the optimistic entry here
+  // would duplicate the user message.
   renderHistory();
   setThinking(true);
+  setSubmitting(true);
 
   try {
     const res = await fetch("/api/chat", {
@@ -743,18 +754,23 @@ async function sendMessage() {
     });
 
     const data = await res.json();
-    if (data.error) {
-      alert(data.error);
-      return;
-    }
-    // Capture the trigger gen so the poll can detect when this pipeline finishes
-    if (typeof data.trigger_gen === "number") {
-      clientTriggerGen = data.trigger_gen;
+    if (!res.ok || data.error) {
+      throw new Error(data.error || "Failed to send message");
     }
   } catch (e) {
-    console.warn("Connection error. Polling will attempt recovery.");
+    conversationHistory = conversationHistory.filter(
+      (m) => m !== optimisticMessage,
+    );
+    if (!userInput.value) userInput.value = text;
+    setThinking(wasThinking);
+    renderHistory();
+    alert(
+      e instanceof Error
+        ? e.message
+        : "Could not confirm delivery. Check history before resending.",
+    );
   } finally {
-    setThinking(false);
+    setSubmitting(false);
     userInput.focus();
   }
 }
@@ -781,18 +797,15 @@ async function rerollLast() {
     });
 
     const data = await res.json();
-    if (data.error) {
-      alert(data.error);
+    if (!res.ok || data.error) {
+      setThinking(false);
+      alert(data.error || "Failed to reroll response");
       return;
     }
-    // Capture the trigger gen so the poll can detect when this pipeline finishes
-    if (typeof data.trigger_gen === "number") {
-      clientTriggerGen = data.trigger_gen;
-    }
   } catch (e) {
+    setThinking(false);
     console.warn("Connection error. Polling will attempt recovery.");
   } finally {
-    setThinking(false);
     userInput.focus();
   }
 }
@@ -800,28 +813,33 @@ async function rerollLast() {
 async function deleteLastTurn() {
   if (isThinking) return;
   if (conversationHistory.length === 0) return;
-  if (!confirm("Delete the last user message and assistant response?")) return;
-
   if (
-    conversationHistory[conversationHistory.length - 1].role.toLowerCase() !==
-    "user"
-  ) {
-    conversationHistory.pop();
-  }
-  if (
-    conversationHistory.length > 0 &&
-    (conversationHistory[conversationHistory.length - 1].role ===
-      userRoleName ||
-      conversationHistory[conversationHistory.length - 1].role === "User" ||
-      conversationHistory[conversationHistory.length - 1].role === "user")
-  ) {
-    conversationHistory.pop();
-  }
+    !confirm(
+      "Delete the last user message, assistant response, and everything generated from them?",
+    )
+  )
+    return;
 
-  saveHistory();
-  renderHistory();
-  await rebuildArtifacts();
-  // userInput.focus();
+  setThinking(true);
+  try {
+    const res = await fetch("/api/history/last-turn", { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      alert(data.error || "Failed to delete the last turn");
+      return;
+    }
+
+    conversationHistory = data.history || [];
+    renderHistory();
+    await rebuildArtifacts();
+  } catch (e) {
+    console.error("Failed to delete the last turn:", e);
+    alert("Failed to delete the last turn");
+  } finally {
+    setThinking(false);
+    renderHistory();
+    userInput.focus();
+  }
 }
 
 async function clearChat() {
@@ -863,6 +881,19 @@ setInterval(async () => {
     if (res.ok) {
       const data = await res.json();
 
+      // Runtime state remains accurate after restarts and failed requests;
+      // cumulative trigger/finish counts do not identify active work.
+      if (!isSubmitting && typeof data.chat_busy === "boolean") {
+        const wasThinking = isThinking;
+        setThinking(data.chat_busy);
+        if (wasThinking && !isThinking) rebuildArtifacts();
+      }
+      if (Array.isArray(data.queued_messages)) {
+        chatQueue.textContent = data.queued_messages
+          .map((item: { message: string }) => `Queued: ${item.message}`)
+          .join("\n");
+      }
+
       // --- History version check (authoritative for ALL history changes) ---
       if (
         data.history_version !== undefined &&
@@ -874,24 +905,6 @@ setInterval(async () => {
           conversationHistory = histData.history || [];
           renderHistory();
           lastHistoryVersion = data.history_version;
-        }
-      }
-
-      // --- Pipeline finish detection ---
-      if (isThinking) {
-        if (
-          clientTriggerGen === null &&
-          typeof data.pipeline_triggers === "number"
-        ) {
-          clientTriggerGen = data.pipeline_triggers;
-        }
-        if (
-          clientTriggerGen !== null &&
-          typeof data.pipeline_finishes === "number" &&
-          data.pipeline_finishes >= clientTriggerGen
-        ) {
-          setThinking(false);
-          rebuildArtifacts();
         }
       }
 

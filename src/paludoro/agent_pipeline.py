@@ -15,9 +15,15 @@ logger = logging.getLogger(__name__)
 
 
 class AgentPipeline:
-    def __init__(self, config: MutableMapping, session: PaludoroSession):
+    def __init__(
+        self,
+        config: MutableMapping,
+        session: PaludoroSession,
+        turn_id: Optional[int] = None,
+    ):
         self.config = config
         self.session = session
+        self.turn_id = turn_id
         self.agent_dict = config.get("agent_dict", {})
 
         # Build dependency graph
@@ -197,7 +203,11 @@ class AgentPipeline:
                         # Use create_version=False to avoid cluttering version history with clears
                         if remote_name == "/dev/stdin":
                             self.session.save_artifact(
-                                remote_name, "", create_version=False
+                                remote_name,
+                                "",
+                                turn=self.turn_id,
+                                create_version=False,
+                                source="internal",
                             )
                         changed = True
 
@@ -239,7 +249,12 @@ class AgentPipeline:
                                         "; Oldest chat history that will be forgotten after this turn.\n"
                                         + sxpb.dumps(old_data)
                                     )
-                                    self.session.save_artifact(old_artipath, old_str)
+                                    self.session.save_artifact(
+                                        old_artipath,
+                                        old_str,
+                                        turn=self.turn_id,
+                                        source="internal",
+                                    )
                                     saved = self.session.artifacts.get(old_artipath, "")
                                     logger.info(
                                         f"[{agent_name}] forgetfulness: wrote {len(overflow)} msgs to {old_artipath}, saved_len={len(saved)}"
@@ -256,7 +271,11 @@ class AgentPipeline:
                                 if total_msgs > preserve:
                                     history_list = history_list[-preserve:]
                                 self.session.save_artifact(
-                                    old_artipath, "", create_version=False
+                                    old_artipath,
+                                    "",
+                                    turn=self.turn_id,
+                                    create_version=False,
+                                    source="internal",
                                 )
                                 logger.info(
                                     f"[{agent_name}] forgetfulness: trimmed to {len(history_list)} msgs, cleared {old_artipath}"
@@ -268,7 +287,12 @@ class AgentPipeline:
 
                     new_history_data = {"history": history_list}
                     new_history_str = sxpb.dumps(new_history_data)
-                    self.session.save_artifact(expose_artipath, new_history_str)
+                    self.session.save_artifact(
+                        expose_artipath,
+                        new_history_str,
+                        turn=self.turn_id,
+                        source="transcript",
+                    )
                     logger.info(f"[{agent_name}] transcript updated {expose_artipath}")
                     changed_artifacts = [expose_artipath]
                     if old_artipath:
@@ -412,7 +436,9 @@ class AgentPipeline:
                         # Partial acceptance: save valid artifacts immediately
                         for a, content in valid_artifacts.items():
                             if self.session.artifacts.get(a) != content:
-                                self.session.save_artifact(a, content)
+                                self.session.save_artifact(
+                                    a, content, turn=self.turn_id, source="agent"
+                                )
                                 accepted_so_far.add(a)
 
                         # Build structured error report
@@ -459,7 +485,12 @@ class AgentPipeline:
                             continue
                         if artipath not in accepted_so_far:
                             if self.session.artifacts.get(artipath) != content:
-                                self.session.save_artifact(artipath, content)
+                                self.session.save_artifact(
+                                    artipath,
+                                    content,
+                                    turn=self.turn_id,
+                                    source="agent",
+                                )
                                 accepted_so_far.add(artipath)
 
                     return sorted(accepted_so_far)
@@ -502,7 +533,12 @@ class AgentPipeline:
                     httpx_client=agent_client,
                 )
                 if image_data:
-                    self.session.save_artifact(expose_artifact, image_data)
+                    self.session.save_artifact(
+                        expose_artifact,
+                        image_data,
+                        turn=self.turn_id,
+                        source="agent",
+                    )
                     return [expose_artifact]
                 else:
                     logger.error(f"[{agent_name}] Failed to generate image.")

@@ -134,6 +134,7 @@ test.describe("Clear Chat", () => {
 
     let pipelineTriggers = 0;
     let pipelineFinishes = 0;
+    let chatBusy = false;
 
     page.route("**/api/history", async (route: any) => {
       if (route.request().method() === "GET") {
@@ -157,12 +158,15 @@ test.describe("Clear Chat", () => {
           running_agents: [],
           pipeline_triggers: pipelineTriggers,
           pipeline_finishes: pipelineFinishes,
+          chat_busy: chatBusy,
+          queued_messages: [],
         },
       });
     });
 
     page.route("**/api/chat", async (route: any) => {
       pipelineTriggers += 1;
+      chatBusy = true;
       await route.fulfill({
         json: { status: "ok", trigger_gen: pipelineTriggers },
       });
@@ -202,9 +206,10 @@ test.describe("Clear Chat", () => {
 
     // Now simulate pipeline finishing
     pipelineFinishes = pipelineTriggers;
+    chatBusy = false;
 
-    // Wait for polling to unstick
-    await expect(page.locator("#send-btn")).toBeEnabled({ timeout: 5000 });
+    // Send stays available; destructive controls wait for runtime work to end.
+    await expect(page.locator("#reroll-btn")).toBeEnabled({ timeout: 5000 });
 
     // Now clear should work
     page.on("dialog", (dialog) => dialog.accept());

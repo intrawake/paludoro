@@ -9,8 +9,8 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "sxpb @ git+https://github.com/sxproto/sxpb-py@04c9bbe867eaacf5bda92f4ee777e9f8fcb2992a",
-    "sxpb-llm[async] @ git+https://github.com/intrawake/sxpb-llm.git@276cee24a351673ca33df23c70b91e53c31af796",
+    "sxpb @ git+https://github.com/sxproto/sxpb-py@539ea1b3fde70abe6c1c2f5188290e51a577d204",
+    "sxpb-llm[async] @ git+https://github.com/intrawake/sxpb-llm.git@56dd2284d690ba1214485e089105d074a78fe066",
     "fastapi>=0.136.1",
     "uvicorn>=0.46.0",
     "opentelemetry-sdk",
@@ -28,14 +28,27 @@ Repository = "https://github.com/intrawake/paludoro"
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff==0.15.22",
+    "ty==0.0.64",
+    "psutil>=7.2.2",
+    "httpx2>=0.28.1",
+    "pytest-asyncio>=1.3.0",
+]
+
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = [
+    "-q",
+    "--import-mode=importlib",
+]
 pythonpath = ["src", "."]
 testpaths = ["test"]
 
 [tool.pdm.scripts]
 chat = { shell = "PYTHONPATH=src python3 src/paludoro/chat.py" }
-test = "pytest -q"
+test = "pytest"
 server = { shell = "PYTHONPATH=src python3 src/paludoro/server.py" }
 web-build = { shell = "cd web && npm run build" }
 
@@ -43,19 +56,10 @@ web-watch = { shell = "cd web && npx vite build --watch --outDir ../dist --empty
 web-install = { shell = "cd web && npm install" }
 check-format = "ruff check"
 check-type = "ty check"
-tidy = { shell = "ruff format src test && ruff check src test --fix && cd web && npx prettier --write '**/*.{ts,html}'" }
-lint = {composite = ["check-format", "check-type"]}
-tidytest = {composite = ["test", "tidy", "lint"]}
+lint-sxpb = "sxpb-lint --ignore-file .gitignore"
+tidy = { shell = "ruff format src test && ruff check src test --fix && sxpb-tidy --ignore-file .gitignore && cd web && npx prettier --write '**/*.{ts,html}'" }
+lint = {composite = ["check-format", "check-type", "lint-sxpb"]}
+tidytest = {composite = ["tidy", "lint", "test"]}
 
 [tool.ty.environment]
 root = ["src", "test", "."]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.2",
-    "ruff",
-    "ty",
-    "psutil>=7.2.2",
-    "httpx2>=0.28.1",
-    "pytest-asyncio>=1.3.0",
-]

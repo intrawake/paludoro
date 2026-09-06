@@ -179,6 +179,7 @@ test.describe("Reroll", () => {
     // but no new history entries. The UI should unstick.
     let pipelineTriggers = 0;
     let pipelineFinishes = 0;
+    let chatBusy = false;
 
     page.route("**/api/history", async (route: any) => {
       if (route.request().method() === "GET") {
@@ -201,6 +202,8 @@ test.describe("Reroll", () => {
           running_agents: [],
           pipeline_triggers: pipelineTriggers,
           pipeline_finishes: pipelineFinishes,
+          chat_busy: chatBusy,
+          queued_messages: [],
         },
       });
     });
@@ -208,6 +211,7 @@ test.describe("Reroll", () => {
     // Chat returns trigger_gen (simulates pipeline being scheduled)
     page.route("**/api/chat", async (route: any) => {
       pipelineTriggers += 1;
+      chatBusy = true;
       await route.fulfill({
         json: { status: "ok", trigger_gen: pipelineTriggers },
       });
@@ -233,13 +237,15 @@ test.describe("Reroll", () => {
     // Click reroll
     await page.click("#reroll-btn");
 
-    // Send button should be disabled (isThinking = true)
-    await expect(page.locator("#send-btn")).toBeDisabled();
+    // New messages can queue, but reroll must wait for the current turn.
+    await expect(page.locator("#send-btn")).toBeEnabled();
+    await expect(page.locator("#reroll-btn")).toBeDisabled();
 
     // Simulate pipeline finishing (without producing history)
     pipelineFinishes = pipelineTriggers;
+    chatBusy = false;
 
-    // Wait for poll to detect completion and reset thinking state
-    await expect(page.locator("#send-btn")).toBeEnabled({ timeout: 5000 });
+    // Runtime state, not history output, releases destructive controls.
+    await expect(page.locator("#reroll-btn")).toBeEnabled({ timeout: 5000 });
   });
 });
